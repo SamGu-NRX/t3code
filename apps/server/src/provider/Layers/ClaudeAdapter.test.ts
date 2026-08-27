@@ -2886,7 +2886,7 @@ describe("ClaudeAdapterLive", () => {
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
-      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 6).pipe(
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 5).pipe(
         Stream.runCollect,
         Effect.forkChild,
       );
@@ -3144,12 +3144,12 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("emits thread token usage updates from Claude task progress", () => {
+  it.effect("ignores task progress usage before the parent has any usage of its own", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
-      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 6).pipe(
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 5).pipe(
         Stream.runCollect,
         Effect.forkChild,
       );
@@ -3177,20 +3177,414 @@ describe("ClaudeAdapterLive", () => {
       const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
       const usageEvent = runtimeEvents.find((event) => event.type === "thread.token-usage.updated");
       const progressEvent = runtimeEvents.find((event) => event.type === "task.progress");
-      assert.equal(usageEvent?.type, "thread.token-usage.updated");
-      if (usageEvent?.type === "thread.token-usage.updated") {
-        assert.deepEqual(usageEvent.payload, {
-          usage: {
-            usedTokens: 321,
-            lastUsedTokens: 321,
-            toolUses: 2,
-            durationMs: 654,
-          },
-        });
-      }
+      // The subagent's 321 tokens are spent in its own window. With no parent
+      // usage recorded yet there is nothing to attach a running total to, so
+      // the parent meter stays silent rather than adopting the child's count.
+      assert.equal(usageEvent, undefined);
       assert.equal(progressEvent?.type, "task.progress");
-      if (usageEvent && progressEvent) {
-        assert.notStrictEqual(usageEvent.eventId, progressEvent.eventId);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("keeps subagent tokens out of the parent context meter (#5942)", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "delegate this",
+        attachments: [],
+      });
+
+      // The parent finishes a small turn of its own.
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        duration_ms: 10,
+        duration_api_ms: 8,
+        num_turns: 1,
+        result: "done",
+        stop_reason: "end_turn",
+        session_id: "sdk-session-child-usage",
+        usage: { input_tokens: 4_000, output_tokens: 200 },
+        modelUsage: { "claude-opus-4-6": { contextWindow: 1_000_000 } },
+      } as unknown as SDKMessage);
+
+      // A background subagent then burns far more than the parent ever has.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-child-1",
+        description: "Background agent doing the heavy work",
+        usage: { total_tokens: 900_000, tool_uses: 40, duration_ms: 1_000 },
+        session_id: "sdk-session-child-usage",
+        uuid: "task-child-progress-1",
+      } as unknown as SDKMessage);
+      harness.query.finish();
+
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(runtimeEventsFiber);
+
+      const usageEvents = runtimeEvents.filter(
+        (event) => event.type === "thread.token-usage.updated",
+      );
+      const latest = usageEvents.at(-1);
+      assert.equal(latest?.type, "thread.token-usage.updated");
+      if (latest?.type === "thread.token-usage.updated") {
+        // The parent's own 4,200 stands. The child's 900,000 only advances the
+        // running total. Before this fix usedTokens became 900,000.
+        assert.equal(latest.payload.usage.usedTokens, 4_200);
+        assert.equal(latest.payload.usage.totalProcessedTokens, 900_000);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("measures the meter against the session model's window, not a subagent's", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-sonnet-5",
+        ),
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "summarize",
+        attachments: [],
+      });
+
+      // A 1M subagent ran alongside a 200k session model.
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        session_id: "sdk-session-window-scope",
+        uuid: "result-window-scope",
+        usage: { input_tokens: 50_000, output_tokens: 1_000 },
+        modelUsage: {
+          "claude-sonnet-5": { contextWindow: 200_000 },
+          "claude-opus-5[1m]": { contextWindow: 1_000_000 },
+        },
+      } as unknown as SDKMessage);
+
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(runtimeEventsFiber);
+      const usageEvents = runtimeEvents.filter(
+        (event) => event.type === "thread.token-usage.updated",
+      );
+      const latest = usageEvents.at(-1);
+      assert.equal(latest?.type, "thread.token-usage.updated");
+      if (latest?.type === "thread.token-usage.updated") {
+        // Before this fix the Math.max over modelUsage reported 1,000,000.
+        assert.equal(latest.payload.usage.maxTokens, 200_000);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("uses the init model's window when no model was explicitly selected", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "summarize",
+        attachments: [],
+      });
+
+      // No selection was made, so the session runs Claude Code's default and
+      // init is the first place its name appears.
+      harness.query.emit({
+        type: "system",
+        subtype: "init",
+        model: "claude-sonnet-5",
+        session_id: "sdk-session-init-window",
+        uuid: "init-window",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        duration_ms: 10,
+        duration_api_ms: 8,
+        num_turns: 1,
+        result: "done",
+        stop_reason: "end_turn",
+        session_id: "sdk-session-init-window",
+        usage: { input_tokens: 50_000, output_tokens: 1_000 },
+        modelUsage: {
+          "claude-sonnet-5": { contextWindow: 200_000 },
+          "claude-opus-5[1m]": { contextWindow: 1_000_000 },
+        },
+      } as unknown as SDKMessage);
+      harness.query.finish();
+
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(runtimeEventsFiber);
+
+      const usageEvents = runtimeEvents.filter(
+        (event) => event.type === "thread.token-usage.updated",
+      );
+      const latest = usageEvents.at(-1);
+      assert.equal(latest?.type, "thread.token-usage.updated");
+      if (latest?.type === "thread.token-usage.updated") {
+        assert.equal(latest.payload.usage.maxTokens, 200_000);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("carries a subagent's running total into the parent's next snapshot", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "delegate this",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "stream_event",
+        event: {
+          type: "message_delta",
+          delta: { stop_reason: null, stop_sequence: null },
+          usage: { input_tokens: 3_000, output_tokens: 0 },
+        },
+        parent_tool_use_id: null,
+        session_id: "sdk-session-running-total",
+        uuid: "parent-running-total",
+      } as unknown as SDKMessage);
+
+      // The child's spend is real work the thread paid for, so it belongs in
+      // the running total even though it never touches the parent's own
+      // used count.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-running-total",
+        description: "Child doing the heavy work",
+        usage: { total_tokens: 480_000 },
+        session_id: "sdk-session-running-total",
+        uuid: "task-running-total-progress",
+      } as unknown as SDKMessage);
+
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(runtimeEventsFiber);
+
+      const usageEvents = runtimeEvents.filter(
+        (event) => event.type === "thread.token-usage.updated",
+      );
+      const latest = usageEvents.at(-1);
+      assert.equal(latest?.type, "thread.token-usage.updated");
+      if (latest?.type === "thread.token-usage.updated") {
+        assert.equal(latest.payload.usage.totalProcessedTokens, 480_000);
+        assert.equal(latest.payload.usage.usedTokens, 3_000);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("keeps a subagent's running total when the parent turn completes", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "go", attachments: [] });
+
+      harness.query.emit({
+        type: "stream_event",
+        event: {
+          type: "message_delta",
+          delta: { stop_reason: null, stop_sequence: null },
+          usage: { input_tokens: 3_000, output_tokens: 0 },
+        },
+        parent_tool_use_id: null,
+        session_id: "sdk-session-running-total-result",
+        uuid: "running-total-result-delta",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-running-total-result",
+        description: "Child doing the heavy work",
+        usage: { total_tokens: 900_000 },
+        session_id: "sdk-session-running-total-result",
+        uuid: "running-total-result-task",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        duration_ms: 10,
+        duration_api_ms: 8,
+        num_turns: 1,
+        result: "done",
+        stop_reason: "end_turn",
+        session_id: "sdk-session-running-total-result",
+        usage: { input_tokens: 4_000, output_tokens: 200 },
+        modelUsage: { "claude-opus-4-6": { contextWindow: 200_000 } },
+      } as unknown as SDKMessage);
+      harness.query.finish();
+
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(runtimeEventsFiber);
+      const ev = runtimeEvents.filter((e) => e.type === "thread.token-usage.updated");
+      const latest = ev.at(-1);
+      assert.equal(latest?.type, "thread.token-usage.updated");
+      if (latest?.type === "thread.token-usage.updated") {
+        // The parent's own result is smaller than the running total the child
+        // already raised. Used tokens follow the parent; total processed is
+        // cumulative thread work and must not regress.
+        assert.equal(latest.payload.usage.usedTokens, 4_200);
+        assert.equal(latest.payload.usage.totalProcessedTokens, 900_000);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("follows a persistent refusal fallback to the model that ran", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "summarize",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "init",
+        model: "claude-sonnet-5",
+        session_id: "sdk-session-refusal",
+        uuid: "refusal-init",
+      } as unknown as SDKMessage);
+
+      // A refusal retry swaps the model for the rest of the session, so the
+      // window has to be measured against the model that actually ran.
+      harness.query.emit({
+        type: "system",
+        subtype: "model_refusal_fallback",
+        trigger: "refusal",
+        direction: "retry",
+        original_model: "claude-sonnet-5",
+        fallback_model: "claude-opus-5[1m]",
+        request_id: null,
+        session_id: "sdk-session-refusal",
+        uuid: "refusal-swap",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        duration_ms: 10,
+        duration_api_ms: 8,
+        num_turns: 1,
+        result: "done",
+        stop_reason: "end_turn",
+        session_id: "sdk-session-refusal",
+        usage: { input_tokens: 50_000, output_tokens: 1_000 },
+        modelUsage: {
+          "claude-sonnet-5": { contextWindow: 200_000 },
+          "claude-opus-5[1m]": { contextWindow: 1_000_000 },
+        },
+      } as unknown as SDKMessage);
+      harness.query.finish();
+
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(runtimeEventsFiber);
+
+      const usageEvents = runtimeEvents.filter(
+        (event) => event.type === "thread.token-usage.updated",
+      );
+      const latest = usageEvents.at(-1);
+      assert.equal(latest?.type, "thread.token-usage.updated");
+      if (latest?.type === "thread.token-usage.updated") {
+        assert.equal(latest.payload.usage.maxTokens, 1_000_000);
       }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -3335,10 +3729,10 @@ describe("ClaudeAdapterLive", () => {
       return Effect.gen(function* () {
         const adapter = yield* ClaudeAdapter;
 
-        const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 9).pipe(
-          Stream.runCollect,
-          Effect.forkChild,
-        );
+        const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+        const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => runtimeEvents.push(event)),
+        ).pipe(Effect.forkChild);
 
         yield* adapter.startSession({
           threadId: THREAD_ID,
@@ -3351,6 +3745,27 @@ describe("ClaudeAdapterLive", () => {
           input: "hello",
           attachments: [],
         });
+
+        // The parent records usage of its own first, so the task snapshot that
+        // follows is actually retained rather than dropped for want of a
+        // baseline. Without this the assertion below would hold even if
+        // completion silently discarded a recorded task total.
+        harness.query.emit({
+          type: "assistant",
+          message: {
+            id: "msg-parent-baseline",
+            type: "message",
+            role: "assistant",
+            model: "claude-opus-4-6",
+            content: [{ type: "text", text: "working" }],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: { input_tokens: 12000, output_tokens: 0 },
+          },
+          parent_tool_use_id: null,
+          session_id: "sdk-session-task-usage-clamped",
+          uuid: "parent-baseline-clamped",
+        } as unknown as SDKMessage);
 
         harness.query.emit({
           type: "system",
@@ -3386,17 +3801,21 @@ describe("ClaudeAdapterLive", () => {
         } as unknown as SDKMessage);
         harness.query.finish();
 
-        const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+        yield* Effect.yieldNow;
+        yield* Fiber.interrupt(runtimeEventsFiber);
         const usageEvents = runtimeEvents.filter(
           (event) => event.type === "thread.token-usage.updated",
         );
         const finalUsageEvent = usageEvents.at(-1);
         assert.equal(finalUsageEvent?.type, "thread.token-usage.updated");
         if (finalUsageEvent?.type === "thread.token-usage.updated") {
+          // The task_progress 190,000 belongs to a subagent, so it survives as
+          // the running total only. The parent's own used count comes from the
+          // result, clamped to the window it reported.
           assert.deepEqual(finalUsageEvent.payload, {
             usage: {
-              usedTokens: 190000,
-              lastUsedTokens: 190000,
+              usedTokens: 200000,
+              lastUsedTokens: 200000,
               totalProcessedTokens: 535000,
               maxTokens: 200000,
             },

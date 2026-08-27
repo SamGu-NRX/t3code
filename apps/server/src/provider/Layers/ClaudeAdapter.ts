@@ -465,10 +465,19 @@ function asRuntimeItemId(value: string): RuntimeItemId {
   return RuntimeItemId.make(value);
 }
 
-function maxClaudeContextWindowFromModelUsage(
+// `modelUsage` is keyed by every model that ran during the turn, subagents
+// included, so the maximum could be a child's window rather than this
+// session's. Fall back to it only when the session model has no entry.
+function claudeContextWindowFromModelUsage(
   modelUsage: Record<string, ModelUsage> | undefined,
+  sessionModel: string | undefined,
 ): number | undefined {
   if (!modelUsage) return undefined;
+
+  const sessionEntry = sessionModel ? modelUsage[sessionModel] : undefined;
+  if (sessionEntry) {
+    return sessionEntry.contextWindow;
+  }
 
   let maxContextWindow: number | undefined;
   for (const value of Object.values(modelUsage)) {
@@ -629,6 +638,8 @@ function compactBoundaryTokenUsageSnapshot(
   });
 }
 
+// A subagent's tokens are spent in its own context window, so they advance the
+// thread's running total but never the parent's used count (#5942).
 function normalizeClaudeTaskProgressTokenUsage(
   value: unknown,
   context: ClaudeSessionContext,
@@ -638,32 +649,25 @@ function normalizeClaudeTaskProgressTokenUsage(
     return undefined;
   }
 
-  const lastUsedTokens = context.lastKnownTokenUsage?.usedTokens;
-  const activeTokens =
-    lastUsedTokens !== undefined ? Math.max(totalTokens, lastUsedTokens) : totalTokens;
-  if (lastUsedTokens !== undefined && activeTokens === lastUsedTokens) {
+  const lastKnown = context.lastKnownTokenUsage;
+  if (!lastKnown) {
+    return undefined;
+  }
+
+  const totalProcessedTokens = Math.max(
+    totalTokens,
+    context.lastKnownTotalProcessedTokens ?? totalTokens,
+  );
+  if (totalProcessedTokens === context.lastKnownTotalProcessedTokens) {
     return undefined;
   }
 
   const usage = value as Record<string, unknown>;
-  const snapshot = makeClaudeTokenUsageSnapshot({
-    activeTokens,
-    ...(context.lastKnownContextWindow !== undefined
-      ? { contextWindow: context.lastKnownContextWindow }
-      : {}),
-    totalProcessedTokens: Math.max(
-      totalTokens,
-      context.lastKnownTotalProcessedTokens ?? totalTokens,
-    ),
-  });
-  if (!snapshot) {
-    return undefined;
-  }
-
   const toolUses = finiteNonNegativeInteger(usage.tool_uses);
   const durationMs = finiteNonNegativeInteger(usage.duration_ms);
   return {
-    ...snapshot,
+    ...lastKnown,
+    totalProcessedTokens,
     ...(toolUses !== undefined ? { toolUses } : {}),
     ...(durationMs !== undefined ? { durationMs } : {}),
   };
@@ -2251,13 +2255,24 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     errorMessage?: string,
     result?: SDKResultMessage,
   ) {
-    const resultContextWindow = maxClaudeContextWindowFromModelUsage(result?.modelUsage);
+    const resultContextWindow = claudeContextWindowFromModelUsage(
+      result?.modelUsage,
+      context.currentApiModelId,
+    );
     if (resultContextWindow !== undefined) {
       context.lastKnownContextWindow = resultContextWindow;
     }
 
     const maxTokens = resultContextWindow ?? context.lastKnownContextWindow;
-    const accumulatedTotalProcessedTokens = claudeTotalProcessedTokens(result?.usage);
+    // The result reports the parent's own usage, so it can be smaller than a
+    // running total a subagent already raised. Total processed is cumulative
+    // work for the thread and only ever grows, so keep the larger figure
+    // rather than letting the parent's turn erase the children's.
+    const resultTotalProcessedTokens = claudeTotalProcessedTokens(result?.usage);
+    const accumulatedTotalProcessedTokens =
+      resultTotalProcessedTokens !== undefined
+        ? Math.max(resultTotalProcessedTokens, context.lastKnownTotalProcessedTokens ?? 0)
+        : undefined;
     if (accumulatedTotalProcessedTokens !== undefined) {
       context.lastKnownTotalProcessedTokens = accumulatedTotalProcessedTokens;
     }
@@ -3180,7 +3195,19 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     switch (message.subtype) {
-      case "init":
+      case "init": {
+        // Without an explicit selection there is no recorded model to key the
+        // context window on, and init is where the SDK first names the default.
+        // A selection is left alone: setModel compares against this id to
+        // decide whether a mid-thread switch still needs to be sent, so
+        // overwriting it with the reported id would suppress that call. A
+        // selected slug that the CLI resolves to a different id therefore
+        // still misses the modelUsage lookup and falls back to the maximum,
+        // which is the behavior that was already there.
+        const initModel = trimmedString(message.model);
+        if (initModel && !context.currentApiModelId) {
+          context.currentApiModelId = initModel;
+        }
         yield* offerRuntimeEvent({
           ...base,
           type: "session.configured",
@@ -3189,6 +3216,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           },
         });
         return;
+      }
       case "status":
         yield* offerRuntimeEvent({
           ...base,
@@ -3482,9 +3510,21 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           yield* emitRuntimeWarning(context, message.text, message);
         }
         return;
+      case "model_refusal_fallback": {
+        // A refusal retry swaps the model for the rest of the session, so the
+        // recorded id has to follow or the window lookup keys a model that no
+        // longer runs. Only "retry" is emitted today; the other directions
+        // remain in the enum for compatibility and do not swap.
+        if (message.direction === "retry") {
+          const fallbackModel = trimmedString(message.fallback_model);
+          if (fallbackModel) {
+            context.currentApiModelId = fallbackModel;
+          }
+        }
+        return;
+      }
       // Inner protocol/UX details with no T3 surface today — consumed
       // deliberately so they don't masquerade as unknown-subtype warnings.
-      case "model_refusal_fallback":
       case "local_command_output":
       case "plugin_install":
       case "commands_changed":
