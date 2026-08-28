@@ -3188,6 +3188,78 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("holds the running total until it exceeds the parent's own usage", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "go", attachments: [] });
+
+      harness.query.emit({
+        type: "stream_event",
+        event: {
+          type: "message_delta",
+          delta: { stop_reason: null, stop_sequence: null },
+          usage: { input_tokens: 3_000, output_tokens: 0 },
+        },
+        parent_tool_use_id: null,
+        session_id: "sdk-session-total-floor",
+        uuid: "total-floor-delta",
+      } as unknown as SDKMessage);
+
+      // A cumulative figure below the parent's active usage would read as
+      // "3,000 of 2,000 total". The child's small tick stays off the meter.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-total-floor",
+        description: "Child barely started",
+        usage: { total_tokens: 2_000 },
+        session_id: "sdk-session-total-floor",
+        uuid: "total-floor-small",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-total-floor",
+        description: "Child past the parent",
+        usage: { total_tokens: 5_000 },
+        session_id: "sdk-session-total-floor",
+        uuid: "total-floor-large",
+      } as unknown as SDKMessage);
+
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(runtimeEventsFiber);
+
+      const usageEvents = runtimeEvents.filter(
+        (event) => event.type === "thread.token-usage.updated",
+      );
+      assert.equal(usageEvents.length, 2);
+      const [afterDelta, afterLargeTick] = usageEvents;
+      if (afterDelta?.type === "thread.token-usage.updated") {
+        assert.equal(afterDelta.payload.usage.usedTokens, 3_000);
+        assert.equal(afterDelta.payload.usage.totalProcessedTokens, undefined);
+      }
+      if (afterLargeTick?.type === "thread.token-usage.updated") {
+        assert.equal(afterLargeTick.payload.usage.usedTokens, 3_000);
+        assert.equal(afterLargeTick.payload.usage.totalProcessedTokens, 5_000);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("keeps subagent tokens out of the parent context meter (#5942)", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

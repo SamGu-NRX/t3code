@@ -654,11 +654,21 @@ function normalizeClaudeTaskProgressTokenUsage(
     return undefined;
   }
 
+  // Math.max floors the running total at the largest single contributor
+  // rather than summing per-task totals: the SDK does not say whether the
+  // result usage already aggregates children, and a sum that double-counted
+  // would overstate work, while a floor only ever understates it.
   const totalProcessedTokens = Math.max(
     totalTokens,
     context.lastKnownTotalProcessedTokens ?? totalTokens,
   );
   if (totalProcessedTokens === context.lastKnownTotalProcessedTokens) {
+    return undefined;
+  }
+  // A total no larger than the parent's own used count would render as a
+  // cumulative figure smaller than the active usage (review finding). The
+  // snapshot builder drops such totals; skip the no-op event entirely.
+  if (totalProcessedTokens <= lastKnown.usedTokens) {
     return undefined;
   }
 
