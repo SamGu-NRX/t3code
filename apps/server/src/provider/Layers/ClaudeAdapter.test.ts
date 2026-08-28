@@ -3317,8 +3317,8 @@ describe("ClaudeAdapterLive", () => {
       const latest = usageEvents.at(-1);
       assert.equal(latest?.type, "thread.token-usage.updated");
       if (latest?.type === "thread.token-usage.updated") {
-        // The parent's own 4,200 stands. The child's 900,000 only advances the
-        // running total. Before this fix usedTokens became 900,000.
+        // The parent's own 4,200 stands; the child's 900,000 only advances
+        // the running total, never usedTokens.
         assert.equal(latest.payload.usage.usedTokens, 4_200);
         assert.equal(latest.payload.usage.totalProcessedTokens, 900_000);
       }
@@ -3376,7 +3376,7 @@ describe("ClaudeAdapterLive", () => {
       const latest = usageEvents.at(-1);
       assert.equal(latest?.type, "thread.token-usage.updated");
       if (latest?.type === "thread.token-usage.updated") {
-        // Before this fix the Math.max over modelUsage reported 1,000,000.
+        // The maximum over modelUsage would report the child's 1,000,000.
         assert.equal(latest.payload.usage.maxTokens, 200_000);
       }
     }).pipe(

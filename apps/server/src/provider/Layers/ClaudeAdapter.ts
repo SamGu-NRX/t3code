@@ -654,10 +654,9 @@ function normalizeClaudeTaskProgressTokenUsage(
     return undefined;
   }
 
-  // Math.max floors the running total at the largest single contributor
-  // rather than summing per-task totals: the SDK does not say whether the
-  // result usage already aggregates children, and a sum that double-counted
-  // would overstate work, while a floor only ever understates it.
+  // The running total floors at the largest single contributor rather than
+  // summing per-task totals: the SDK does not document whether result usage
+  // already aggregates children, and a floor can only understate.
   const totalProcessedTokens = Math.max(
     totalTokens,
     context.lastKnownTotalProcessedTokens ?? totalTokens,
@@ -665,9 +664,8 @@ function normalizeClaudeTaskProgressTokenUsage(
   if (totalProcessedTokens === context.lastKnownTotalProcessedTokens) {
     return undefined;
   }
-  // A total no larger than the parent's own used count would render as a
-  // cumulative figure smaller than the active usage (review finding). The
-  // snapshot builder drops such totals; skip the no-op event entirely.
+  // Match makeClaudeTokenUsageSnapshot's invariant: a running total is only
+  // meaningful once it exceeds the parent's own used count.
   if (totalProcessedTokens <= lastKnown.usedTokens) {
     return undefined;
   }
@@ -2274,10 +2272,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     const maxTokens = resultContextWindow ?? context.lastKnownContextWindow;
-    // The result reports the parent's own usage, so it can be smaller than a
-    // running total a subagent already raised. Total processed is cumulative
-    // work for the thread and only ever grows, so keep the larger figure
-    // rather than letting the parent's turn erase the children's.
+    // The result carries only the parent's own usage, which can be smaller
+    // than a running total a subagent already raised; the thread total only
+    // ever grows.
     const resultTotalProcessedTokens = claudeTotalProcessedTokens(result?.usage);
     const accumulatedTotalProcessedTokens =
       resultTotalProcessedTokens !== undefined
@@ -3206,14 +3203,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
     switch (message.subtype) {
       case "init": {
-        // Without an explicit selection there is no recorded model to key the
-        // context window on, and init is where the SDK first names the default.
-        // A selection is left alone: setModel compares against this id to
-        // decide whether a mid-thread switch still needs to be sent, so
-        // overwriting it with the reported id would suppress that call. A
-        // selected slug that the CLI resolves to a different id therefore
-        // still misses the modelUsage lookup and falls back to the maximum,
-        // which is the behavior that was already there.
+        // init is where the SDK first names the model, so record it when no
+        // explicit selection exists. A selection is left alone: setModel
+        // compares against this id to decide whether a mid-thread switch
+        // still needs to be sent.
         const initModel = trimmedString(message.model);
         if (initModel && !context.currentApiModelId) {
           context.currentApiModelId = initModel;
@@ -3523,8 +3516,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       case "model_refusal_fallback": {
         // A refusal retry swaps the model for the rest of the session, so the
         // recorded id has to follow or the window lookup keys a model that no
-        // longer runs. Only "retry" is emitted today; the other directions
-        // remain in the enum for compatibility and do not swap.
+        // longer runs.
         if (message.direction === "retry") {
           const fallbackModel = trimmedString(message.fallback_model);
           if (fallbackModel) {
