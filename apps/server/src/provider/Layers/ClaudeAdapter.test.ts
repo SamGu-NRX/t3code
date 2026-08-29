@@ -3664,6 +3664,75 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("does not re-send a refused model on the next turn with the same selection", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEventsFiber = yield* Stream.runForEach(
+        adapter.streamEvents,
+        () => Effect.void,
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      const selection = createModelSelection(
+        ProviderInstanceId.make("claudeAgent"),
+        "claude-opus-4-6",
+      );
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "first",
+        modelSelection: selection,
+        attachments: [],
+      });
+      assert.deepEqual(harness.query.setModelCalls, ["claude-opus-4-6[1m]"]);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "model_refusal_fallback",
+        trigger: "refusal",
+        direction: "retry",
+        original_model: "claude-opus-4-6[1m]",
+        fallback_model: "claude-sonnet-5",
+        request_id: null,
+        session_id: "sdk-session-refusal-resend",
+        uuid: "refusal-resend-swap",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        duration_ms: 10,
+        duration_api_ms: 8,
+        num_turns: 1,
+        result: "done",
+        stop_reason: "end_turn",
+        session_id: "sdk-session-refusal-resend",
+        usage: { input_tokens: 1_000, output_tokens: 10 },
+      } as unknown as SDKMessage);
+      yield* Effect.yieldNow;
+
+      // The selection has not changed, so the second turn must not call
+      // setModel at all — least of all with the model the API just refused.
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "second",
+        modelSelection: selection,
+        attachments: [],
+      });
+      assert.deepEqual(harness.query.setModelCalls, ["claude-opus-4-6[1m]"]);
+
+      yield* Fiber.interrupt(runtimeEventsFiber);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("emits Claude context window on result completion usage snapshots", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

@@ -287,6 +287,11 @@ interface ClaudeSessionContext {
   readonly startedAt: string;
   readonly basePermissionMode: PermissionMode | undefined;
   currentApiModelId: string | undefined;
+  /** The model the SDK reports is actually serving this session, which is not
+   * always the selected one: a refusal retry swaps it for the rest of the
+   * session. Kept apart from `currentApiModelId`, which tracks the last id
+   * passed to `setModel` and must keep matching the user's selection. */
+  observedApiModelId: string | undefined;
   /** Effective effort for the session's turns; subagents without an explicit
    * effort override inherit this. */
   currentEffort: string | undefined;
@@ -2265,7 +2270,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   ) {
     const resultContextWindow = claudeContextWindowFromModelUsage(
       result?.modelUsage,
-      context.currentApiModelId,
+      context.observedApiModelId ?? context.currentApiModelId,
     );
     if (resultContextWindow !== undefined) {
       context.lastKnownContextWindow = resultContextWindow;
@@ -3203,13 +3208,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
     switch (message.subtype) {
       case "init": {
-        // init is where the SDK first names the model, so record it when no
-        // explicit selection exists. A selection is left alone: setModel
-        // compares against this id to decide whether a mid-thread switch
-        // still needs to be sent.
+        // init is the first place the SDK names the model actually serving the
+        // session, which is the id `modelUsage` is keyed by.
         const initModel = trimmedString(message.model);
-        if (initModel && !context.currentApiModelId) {
-          context.currentApiModelId = initModel;
+        if (initModel) {
+          context.observedApiModelId = initModel;
         }
         yield* offerRuntimeEvent({
           ...base,
@@ -3515,12 +3518,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         return;
       case "model_refusal_fallback": {
         // A refusal retry swaps the model for the rest of the session, so the
-        // recorded id has to follow or the window lookup keys a model that no
-        // longer runs.
+        // window lookup has to follow it. `currentApiModelId` deliberately
+        // does not: it mirrors the user's selection for `setModel`, and moving
+        // it here would make the next turn re-send the refused model.
         if (message.direction === "retry") {
           const fallbackModel = trimmedString(message.fallback_model);
           if (fallbackModel) {
-            context.currentApiModelId = fallbackModel;
+            context.observedApiModelId = fallbackModel;
           }
         }
         return;
@@ -4502,6 +4506,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         startedAt,
         basePermissionMode: permissionMode,
         currentApiModelId: apiModelId,
+        observedApiModelId: undefined,
         currentEffort: effectiveEffort ?? undefined,
         resumeSessionId: sessionId,
         pendingApprovals,
