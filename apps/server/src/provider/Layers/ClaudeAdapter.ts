@@ -4633,6 +4633,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           catch: (cause) => toRequestError(input.threadId, "turn/setModel", cause),
         });
         context.currentApiModelId = apiModelId;
+        // A deliberate switch supersedes whatever init or a refusal observed;
+        // leaving it stale would measure the meter against the old model.
+        context.observedApiModelId = apiModelId;
       }
       context.session = {
         ...context.session,

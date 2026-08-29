@@ -3664,6 +3664,76 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("measures the window against the model a mid-thread switch selected", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "init",
+        model: "claude-opus-4-6[1m]",
+        session_id: "sdk-session-switch",
+        uuid: "switch-init",
+      } as unknown as SDKMessage);
+      yield* Effect.yieldNow;
+
+      // The user switches to a 200k model partway through the thread.
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "switch",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-sonnet-5",
+        },
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        duration_ms: 10,
+        duration_api_ms: 8,
+        num_turns: 1,
+        result: "done",
+        stop_reason: "end_turn",
+        session_id: "sdk-session-switch",
+        usage: { input_tokens: 20_000, output_tokens: 500 },
+        modelUsage: {
+          "claude-opus-4-6[1m]": { contextWindow: 1_000_000 },
+          "claude-sonnet-5": { contextWindow: 200_000 },
+        },
+      } as unknown as SDKMessage);
+      harness.query.finish();
+
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(runtimeEventsFiber);
+
+      const usageEvents = runtimeEvents.filter(
+        (event) => event.type === "thread.token-usage.updated",
+      );
+      const latest = usageEvents.at(-1);
+      assert.equal(latest?.type, "thread.token-usage.updated");
+      if (latest?.type === "thread.token-usage.updated") {
+        assert.equal(latest.payload.usage.maxTokens, 200_000);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("does not re-send a refused model on the next turn with the same selection", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
