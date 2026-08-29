@@ -4021,13 +4021,14 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(finalUsageEvent?.type, "thread.token-usage.updated");
         if (finalUsageEvent?.type === "thread.token-usage.updated") {
           // The task_progress 190,000 belongs to a subagent, so it survives as
-          // the running total only. The parent's own used count comes from the
-          // result, clamped to the window it reported.
+          // the running total only. The parent's own used count comes from its
+          // last assistant usage, not the cumulative result total.
           assert.deepEqual(finalUsageEvent.payload, {
             usage: {
-              usedTokens: 200000,
-              lastUsedTokens: 200000,
+              usedTokens: 12000,
+              lastUsedTokens: 12000,
               totalProcessedTokens: 535000,
+              inputTokens: 12000,
               maxTokens: 200000,
             },
           });
