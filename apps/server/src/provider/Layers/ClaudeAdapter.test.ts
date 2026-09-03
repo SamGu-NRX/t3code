@@ -3293,7 +3293,7 @@ describe("ClaudeAdapterLive", () => {
         stop_reason: "end_turn",
         session_id: "sdk-session-child-usage",
         usage: { input_tokens: 4_000, output_tokens: 200 },
-        modelUsage: { "claude-opus-4-6": { contextWindow: 1_000_000 } },
+        modelUsage: { [SYNTHETIC_CLAUDE_CAPABLE_MODEL]: { contextWindow: 1_000_000 } },
       } as unknown as SDKMessage);
 
       // A background subagent then burns far more than the parent ever has.
@@ -3344,7 +3344,8 @@ describe("ClaudeAdapterLive", () => {
         runtimeMode: "full-access",
         modelSelection: createModelSelection(
           ProviderInstanceId.make("claudeAgent"),
-          "claude-sonnet-5",
+          SYNTHETIC_CLAUDE_STANDARD_MODEL,
+          [{ id: "contextWindow", value: "standard" }],
         ),
       });
 
@@ -3363,8 +3364,8 @@ describe("ClaudeAdapterLive", () => {
         uuid: "result-window-scope",
         usage: { input_tokens: 50_000, output_tokens: 1_000 },
         modelUsage: {
-          "claude-sonnet-5": { contextWindow: 200_000 },
-          "claude-opus-5[1m]": { contextWindow: 1_000_000 },
+          [SYNTHETIC_CLAUDE_STANDARD_MODEL]: { contextWindow: 200_000 },
+          [`${SYNTHETIC_CLAUDE_CAPABLE_MODEL}[expanded]`]: { contextWindow: 1_000_000 },
         },
       } as unknown as SDKMessage);
 
@@ -3411,7 +3412,7 @@ describe("ClaudeAdapterLive", () => {
       harness.query.emit({
         type: "system",
         subtype: "init",
-        model: "claude-sonnet-5",
+        model: SYNTHETIC_CLAUDE_STANDARD_MODEL,
         session_id: "sdk-session-init-window",
         uuid: "init-window",
       } as unknown as SDKMessage);
@@ -3428,8 +3429,8 @@ describe("ClaudeAdapterLive", () => {
         session_id: "sdk-session-init-window",
         usage: { input_tokens: 50_000, output_tokens: 1_000 },
         modelUsage: {
-          "claude-sonnet-5": { contextWindow: 200_000 },
-          "claude-opus-5[1m]": { contextWindow: 1_000_000 },
+          [SYNTHETIC_CLAUDE_STANDARD_MODEL]: { contextWindow: 200_000 },
+          [`${SYNTHETIC_CLAUDE_CAPABLE_MODEL}[expanded]`]: { contextWindow: 1_000_000 },
         },
       } as unknown as SDKMessage);
       harness.query.finish();
@@ -3564,7 +3565,7 @@ describe("ClaudeAdapterLive", () => {
         stop_reason: "end_turn",
         session_id: "sdk-session-running-total-result",
         usage: { input_tokens: 4_000, output_tokens: 200 },
-        modelUsage: { "claude-opus-4-6": { contextWindow: 200_000 } },
+        modelUsage: { [SYNTHETIC_CLAUDE_CAPABLE_MODEL]: { contextWindow: 200_000 } },
       } as unknown as SDKMessage);
       harness.query.finish();
 
@@ -3610,7 +3611,7 @@ describe("ClaudeAdapterLive", () => {
       harness.query.emit({
         type: "system",
         subtype: "init",
-        model: "claude-sonnet-5",
+        model: SYNTHETIC_CLAUDE_STANDARD_MODEL,
         session_id: "sdk-session-refusal",
         uuid: "refusal-init",
       } as unknown as SDKMessage);
@@ -3622,8 +3623,8 @@ describe("ClaudeAdapterLive", () => {
         subtype: "model_refusal_fallback",
         trigger: "refusal",
         direction: "retry",
-        original_model: "claude-sonnet-5",
-        fallback_model: "claude-opus-5[1m]",
+        original_model: SYNTHETIC_CLAUDE_STANDARD_MODEL,
+        fallback_model: `${SYNTHETIC_CLAUDE_CAPABLE_MODEL}[expanded]`,
         request_id: null,
         session_id: "sdk-session-refusal",
         uuid: "refusal-swap",
@@ -3641,8 +3642,8 @@ describe("ClaudeAdapterLive", () => {
         session_id: "sdk-session-refusal",
         usage: { input_tokens: 50_000, output_tokens: 1_000 },
         modelUsage: {
-          "claude-sonnet-5": { contextWindow: 200_000 },
-          "claude-opus-5[1m]": { contextWindow: 1_000_000 },
+          [SYNTHETIC_CLAUDE_STANDARD_MODEL]: { contextWindow: 200_000 },
+          [`${SYNTHETIC_CLAUDE_CAPABLE_MODEL}[expanded]`]: { contextWindow: 1_000_000 },
         },
       } as unknown as SDKMessage);
       harness.query.finish();
@@ -3682,7 +3683,7 @@ describe("ClaudeAdapterLive", () => {
       harness.query.emit({
         type: "system",
         subtype: "init",
-        model: "claude-opus-4-6[1m]",
+        model: `${SYNTHETIC_CLAUDE_CAPABLE_MODEL}[expanded]`,
         session_id: "sdk-session-switch",
         uuid: "switch-init",
       } as unknown as SDKMessage);
@@ -3692,10 +3693,11 @@ describe("ClaudeAdapterLive", () => {
       yield* adapter.sendTurn({
         threadId: THREAD_ID,
         input: "switch",
-        modelSelection: {
-          instanceId: ProviderInstanceId.make("claudeAgent"),
-          model: "claude-sonnet-5",
-        },
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          SYNTHETIC_CLAUDE_STANDARD_MODEL,
+          [{ id: "contextWindow", value: "standard" }],
+        ),
         attachments: [],
       });
 
@@ -3711,8 +3713,8 @@ describe("ClaudeAdapterLive", () => {
         session_id: "sdk-session-switch",
         usage: { input_tokens: 20_000, output_tokens: 500 },
         modelUsage: {
-          "claude-opus-4-6[1m]": { contextWindow: 1_000_000 },
-          "claude-sonnet-5": { contextWindow: 200_000 },
+          [`${SYNTHETIC_CLAUDE_CAPABLE_MODEL}[expanded]`]: { contextWindow: 1_000_000 },
+          [SYNTHETIC_CLAUDE_STANDARD_MODEL]: { contextWindow: 200_000 },
         },
       } as unknown as SDKMessage);
       harness.query.finish();
@@ -3751,7 +3753,8 @@ describe("ClaudeAdapterLive", () => {
 
       const selection = createModelSelection(
         ProviderInstanceId.make("claudeAgent"),
-        "claude-opus-4-6",
+        SYNTHETIC_CLAUDE_CAPABLE_MODEL,
+        [{ id: "contextWindow", value: "expanded" }],
       );
       yield* adapter.sendTurn({
         threadId: THREAD_ID,
@@ -3759,15 +3762,17 @@ describe("ClaudeAdapterLive", () => {
         modelSelection: selection,
         attachments: [],
       });
-      assert.deepEqual(harness.query.setModelCalls, ["claude-opus-4-6[1m]"]);
+      assert.deepEqual(harness.query.setModelCalls, [
+        `${SYNTHETIC_CLAUDE_CAPABLE_MODEL}[expanded]`,
+      ]);
 
       harness.query.emit({
         type: "system",
         subtype: "model_refusal_fallback",
         trigger: "refusal",
         direction: "retry",
-        original_model: "claude-opus-4-6[1m]",
-        fallback_model: "claude-sonnet-5",
+        original_model: `${SYNTHETIC_CLAUDE_CAPABLE_MODEL}[expanded]`,
+        fallback_model: SYNTHETIC_CLAUDE_STANDARD_MODEL,
         request_id: null,
         session_id: "sdk-session-refusal-resend",
         uuid: "refusal-resend-swap",
@@ -3794,7 +3799,9 @@ describe("ClaudeAdapterLive", () => {
         modelSelection: selection,
         attachments: [],
       });
-      assert.deepEqual(harness.query.setModelCalls, ["claude-opus-4-6[1m]"]);
+      assert.deepEqual(harness.query.setModelCalls, [
+        `${SYNTHETIC_CLAUDE_CAPABLE_MODEL}[expanded]`,
+      ]);
 
       yield* Fiber.interrupt(runtimeEventsFiber);
     }).pipe(
@@ -3967,7 +3974,7 @@ describe("ClaudeAdapterLive", () => {
             id: "msg-parent-baseline",
             type: "message",
             role: "assistant",
-            model: "claude-opus-4-6",
+            model: SYNTHETIC_CLAUDE_CAPABLE_MODEL,
             content: [{ type: "text", text: "working" }],
             stop_reason: null,
             stop_sequence: null,
