@@ -3239,6 +3239,8 @@ describe("ClaudeAdapterLive", () => {
       } as unknown as SDKMessage);
 
       yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
       yield* Fiber.interrupt(runtimeEventsFiber);
 
       const usageEvents = runtimeEvents.filter(
@@ -3309,6 +3311,8 @@ describe("ClaudeAdapterLive", () => {
       harness.query.finish();
 
       yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
       yield* Fiber.interrupt(runtimeEventsFiber);
 
       const usageEvents = runtimeEvents.filter(
@@ -3369,6 +3373,8 @@ describe("ClaudeAdapterLive", () => {
         },
       } as unknown as SDKMessage);
 
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
       yield* Effect.yieldNow;
       yield* Fiber.interrupt(runtimeEventsFiber);
       const usageEvents = runtimeEvents.filter(
@@ -3436,6 +3442,8 @@ describe("ClaudeAdapterLive", () => {
       harness.query.finish();
 
       yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
       yield* Fiber.interrupt(runtimeEventsFiber);
 
       const usageEvents = runtimeEvents.filter(
@@ -3498,6 +3506,8 @@ describe("ClaudeAdapterLive", () => {
         uuid: "task-running-total-progress",
       } as unknown as SDKMessage);
 
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
       yield* Effect.yieldNow;
       yield* Fiber.interrupt(runtimeEventsFiber);
 
@@ -3569,6 +3579,8 @@ describe("ClaudeAdapterLive", () => {
       } as unknown as SDKMessage);
       harness.query.finish();
 
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
       yield* Effect.yieldNow;
       yield* Fiber.interrupt(runtimeEventsFiber);
       const ev = runtimeEvents.filter((e) => e.type === "thread.token-usage.updated");
@@ -3649,6 +3661,8 @@ describe("ClaudeAdapterLive", () => {
       harness.query.finish();
 
       yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
       yield* Fiber.interrupt(runtimeEventsFiber);
 
       const usageEvents = runtimeEvents.filter(
@@ -3688,6 +3702,8 @@ describe("ClaudeAdapterLive", () => {
         uuid: "switch-init",
       } as unknown as SDKMessage);
       yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
 
       // The user switches to a 200k model partway through the thread.
       yield* adapter.sendTurn({
@@ -3719,6 +3735,8 @@ describe("ClaudeAdapterLive", () => {
       } as unknown as SDKMessage);
       harness.query.finish();
 
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
       yield* Effect.yieldNow;
       yield* Fiber.interrupt(runtimeEventsFiber);
 
@@ -3789,6 +3807,8 @@ describe("ClaudeAdapterLive", () => {
         session_id: "sdk-session-refusal-resend",
         usage: { input_tokens: 1_000, output_tokens: 10 },
       } as unknown as SDKMessage);
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
       yield* Effect.yieldNow;
 
       // The selection has not changed, so the second turn must not call
@@ -4019,6 +4039,8 @@ describe("ClaudeAdapterLive", () => {
         } as unknown as SDKMessage);
         harness.query.finish();
 
+        yield* Effect.yieldNow;
+        yield* Effect.yieldNow;
         yield* Effect.yieldNow;
         yield* Fiber.interrupt(runtimeEventsFiber);
         const usageEvents = runtimeEvents.filter(
