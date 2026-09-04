@@ -3897,15 +3897,15 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("clamps oversized Claude usage to the reported context window", () => {
+  it.effect("does not treat total-only Claude result usage as active context", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
-      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 7).pipe(
-        Stream.runCollect,
-        Effect.forkChild,
-      );
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
 
       yield* adapter.startSession({
         threadId: THREAD_ID,
@@ -3928,7 +3928,7 @@ describe("ClaudeAdapterLive", () => {
         num_turns: 1,
         result: "done",
         stop_reason: "end_turn",
-        session_id: "sdk-session-result-usage-clamped",
+        session_id: "sdk-session-result-total-only",
         usage: {
           total_tokens: 535000,
         },
@@ -3943,16 +3943,104 @@ describe("ClaudeAdapterLive", () => {
 
       const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
       const usageEvent = runtimeEvents.find((event) => event.type === "thread.token-usage.updated");
-      assert.equal(usageEvent?.type, "thread.token-usage.updated");
-      if (usageEvent?.type === "thread.token-usage.updated") {
-        assert.deepEqual(usageEvent.payload, {
-          usage: {
-            usedTokens: 200000,
-            lastUsedTokens: 200000,
-            totalProcessedTokens: 535000,
-            maxTokens: 200000,
+      // 535,000 is the session's cumulative spend, not context occupancy. With
+      // no active reading in the turn there is nothing truthful to show, and
+      // clamping it to the window rendered a full meter.
+      assert.equal(usageEvent, undefined);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("keeps subagent totals out of parent context when the result is total-only", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-total-only",
+        description: "Thinking through the patch",
+        usage: {
+          total_tokens: 190000,
+        },
+        session_id: "sdk-session-total-only-after-progress",
+        uuid: "task-total-only-progress",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-total-only",
+        status: "completed",
+        summary: "Task finished",
+        usage: {
+          total_tokens: 250000,
+          tool_uses: 100,
+          duration_ms: 900000,
+        },
+        session_id: "sdk-session-total-only-after-progress",
+        uuid: "task-total-only-completed",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        duration_ms: 1234,
+        duration_api_ms: 1200,
+        num_turns: 1,
+        result: "done",
+        stop_reason: "end_turn",
+        session_id: "sdk-session-total-only-after-progress",
+        usage: {
+          total_tokens: 535000,
+        },
+        modelUsage: {
+          [SYNTHETIC_CLAUDE_CAPABLE_MODEL]: {
+            contextWindow: 200000,
+            maxOutputTokens: 64000,
           },
-        });
+        },
+      } as unknown as SDKMessage);
+      harness.query.finish();
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const usageEvents = runtimeEvents.filter(
+        (event) => event.type === "thread.token-usage.updated",
+      );
+      // The parent never reported usage of its own, so neither the children's
+      // totals nor the cumulative result may fabricate a meter reading. The
+      // children's numbers still ride on their task events.
+      assert.deepEqual(usageEvents, []);
+      const progressEvent = runtimeEvents.find((event) => event.type === "task.progress");
+      const completedEvent = runtimeEvents.find((event) => event.type === "task.completed");
+      assert.equal(progressEvent?.type, "task.progress");
+      assert.equal(completedEvent?.type, "task.completed");
+      if (progressEvent?.type === "task.progress") {
+        assert.equal(progressEvent.payload.typedUsage?.totalTokens, 190000);
+      }
+      if (completedEvent?.type === "task.completed") {
+        assert.equal(completedEvent.payload.typedUsage?.totalTokens, 250000);
       }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),

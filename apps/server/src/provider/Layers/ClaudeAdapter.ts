@@ -2304,13 +2304,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       resultUsageRecord !== undefined &&
       !resultHasActiveUsage &&
       claudeTotalProcessedTokens(resultUsageRecord) !== undefined;
-    const resultIterationSnapshot = resultUsageRecord
-      ? normalizeClaudeActiveTokenUsage(
-          resultUsageRecord,
-          maxTokens,
-          accumulatedTotalProcessedTokens ?? context.lastKnownTotalProcessedTokens,
-        )
-      : undefined;
+    // A result carrying only cumulative total_tokens is not an active-context
+    // reading; without this gate it would render as a full meter (#6586).
+    const resultIterationSnapshot =
+      resultUsageRecord && resultHasActiveUsage
+        ? normalizeClaudeActiveTokenUsage(
+            resultUsageRecord,
+            maxTokens,
+            accumulatedTotalProcessedTokens ?? context.lastKnownTotalProcessedTokens,
+          )
+        : undefined;
     const latestAssistantSnapshot = normalizeClaudeActiveTokenUsage(
       context.turnState?.latestAssistantUsage,
       maxTokens,
