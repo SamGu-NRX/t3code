@@ -5038,6 +5038,88 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("adds cumulative usage deltas from separate Claude tasks", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "task.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "delegate", attachments: [] });
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        session_id: "sdk-session-multiple-task-usage",
+        uuid: "multiple-task-parent-result",
+        usage: { input_tokens: 4_000, output_tokens: 200 },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-usage-a",
+        description: "First child working",
+        usage: { total_tokens: 100_000, tool_uses: 10, duration_ms: 1_000 },
+        session_id: "sdk-session-multiple-task-usage",
+        uuid: "multiple-task-a-progress-1",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-usage-b",
+        description: "Second child working",
+        usage: { total_tokens: 100_000, tool_uses: 5, duration_ms: 500 },
+        session_id: "sdk-session-multiple-task-usage",
+        uuid: "multiple-task-b-progress-1",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-usage-a",
+        description: "First child still working",
+        usage: { total_tokens: 120_000, tool_uses: 12, duration_ms: 1_200 },
+        session_id: "sdk-session-multiple-task-usage",
+        uuid: "multiple-task-a-progress-2",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-usage-b",
+        status: "completed",
+        summary: "Second child finished",
+        usage: { total_tokens: 100_000, tool_uses: 5, duration_ms: 500 },
+        session_id: "sdk-session-multiple-task-usage",
+        uuid: "multiple-task-b-completed",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const usageEvents = runtimeEvents.filter(
+        (event) => event.type === "thread.token-usage.updated",
+      );
+      assert.equal(usageEvents.length, 4);
+      const latest = usageEvents.at(-1);
+      assert.equal(latest?.type, "thread.token-usage.updated");
+      if (latest?.type === "thread.token-usage.updated") {
+        assert.equal(latest.payload.usage.usedTokens, 4_200);
+        assert.equal(latest.payload.usage.totalProcessedTokens, 224_200);
+        assert.equal(latest.payload.usage.toolUses, 17);
+        assert.equal(latest.payload.usage.durationMs, 1_700);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("keeps subagent tokens out of the parent context meter (#5942)", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -5102,10 +5184,10 @@ describe("ClaudeAdapterLive", () => {
       const latest = usageEvents.at(-1);
       assert.equal(latest?.type, "thread.token-usage.updated");
       if (latest?.type === "thread.token-usage.updated") {
-        // The parent's own 4,200 stands; the child's 900,000 only advances
-        // the running total, never usedTokens.
+        // The parent's own 4,200 stands. The child's 900,000 advances only
+        // the separate running total.
         assert.equal(latest.payload.usage.usedTokens, 4_200);
-        assert.equal(latest.payload.usage.totalProcessedTokens, 900_000);
+        assert.equal(latest.payload.usage.totalProcessedTokens, 904_200);
       }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),

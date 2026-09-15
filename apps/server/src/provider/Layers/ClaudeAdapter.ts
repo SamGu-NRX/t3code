@@ -312,6 +312,12 @@ function rememberPendingTaskModel(
   }
 }
 
+interface ClaudeTaskCumulativeUsage {
+  readonly totalTokens: number;
+  readonly toolUses: number;
+  readonly durationMs: number;
+}
+
 interface ClaudeSessionContext {
   session: ProviderSession;
   startInput: Parameters<ClaudeAdapterShape["startSession"]>[0];
@@ -360,6 +366,8 @@ interface ClaudeSessionContext {
   lastKnownContextWindow: number | undefined;
   lastKnownTokenUsage: ThreadTokenUsageSnapshot | undefined;
   lastKnownTotalProcessedTokens: number | undefined;
+  readonly taskUsageById: Map<string, ClaudeTaskCumulativeUsage>;
+  taskUsageTotals: ClaudeTaskCumulativeUsage;
   lastAssistantUuid: string | undefined;
   lastThreadStartedId: string | undefined;
   /** Limits already announced for the running turn, keyed `window:resetsAt`. */
@@ -841,6 +849,7 @@ function compactBoundaryTokenUsageSnapshot(
 // A subagent's tokens are spent in its own context window, so they advance the
 // thread's running total but never the parent's used count (#5942).
 function normalizeClaudeTaskProgressTokenUsage(
+  taskId: string,
   value: unknown,
   context: ClaudeSessionContext,
 ): ThreadTokenUsageSnapshot | undefined {
@@ -849,33 +858,54 @@ function normalizeClaudeTaskProgressTokenUsage(
     return undefined;
   }
 
+  const usage = value as Record<string, unknown>;
+  // SDK task usage is cumulative per task. Per-task high-water marks keep
+  // repeated progress and completion receipts from counting the same work twice.
+  const previous = context.taskUsageById.get(taskId);
+  const next: ClaudeTaskCumulativeUsage = {
+    totalTokens: Math.max(previous?.totalTokens ?? 0, totalTokens),
+    toolUses: Math.max(previous?.toolUses ?? 0, finiteNonNegativeInteger(usage.tool_uses) ?? 0),
+    durationMs: Math.max(
+      previous?.durationMs ?? 0,
+      finiteNonNegativeInteger(usage.duration_ms) ?? 0,
+    ),
+  };
+  const tokenDelta = next.totalTokens - (previous?.totalTokens ?? 0);
+  const toolUseDelta = next.toolUses - (previous?.toolUses ?? 0);
+  const durationDelta = next.durationMs - (previous?.durationMs ?? 0);
+  if (tokenDelta === 0 && toolUseDelta === 0 && durationDelta === 0) {
+    return undefined;
+  }
+
+  context.taskUsageById.set(taskId, next);
+  context.taskUsageTotals = {
+    totalTokens: context.taskUsageTotals.totalTokens + tokenDelta,
+    toolUses: context.taskUsageTotals.toolUses + toolUseDelta,
+    durationMs: context.taskUsageTotals.durationMs + durationDelta,
+  };
+  const totalProcessedTokens = (context.lastKnownTotalProcessedTokens ?? 0) + tokenDelta;
+  context.lastKnownTotalProcessedTokens = totalProcessedTokens;
+
   const lastKnown = context.lastKnownTokenUsage;
   if (!lastKnown) {
     return undefined;
   }
 
-  // The running total floors at the largest single contributor rather than
-  // summing per-task totals: the SDK does not document whether result usage
-  // already aggregates children, and a floor can only understate.
-  const totalProcessedTokens = Math.max(
-    totalTokens,
-    context.lastKnownTotalProcessedTokens ?? totalTokens,
-  );
-  if (totalProcessedTokens === context.lastKnownTotalProcessedTokens) {
-    return undefined;
-  }
-  // Match makeClaudeTokenUsageSnapshot's invariant: a running total is only
-  // meaningful once it exceeds the parent's own used count.
-  if (totalProcessedTokens <= lastKnown.usedTokens) {
+  const visibleTotal =
+    totalProcessedTokens > lastKnown.usedTokens ? totalProcessedTokens : undefined;
+  const toolUses = context.taskUsageTotals.toolUses || undefined;
+  const durationMs = context.taskUsageTotals.durationMs || undefined;
+  if (
+    visibleTotal === lastKnown.totalProcessedTokens &&
+    toolUses === lastKnown.toolUses &&
+    durationMs === lastKnown.durationMs
+  ) {
     return undefined;
   }
 
-  const usage = value as Record<string, unknown>;
-  const toolUses = finiteNonNegativeInteger(usage.tool_uses);
-  const durationMs = finiteNonNegativeInteger(usage.duration_ms);
   return {
     ...lastKnown,
-    totalProcessedTokens,
+    ...(visibleTotal !== undefined ? { totalProcessedTokens: visibleTotal } : {}),
     ...(toolUses !== undefined ? { toolUses } : {}),
     ...(durationMs !== undefined ? { durationMs } : {}),
   };
@@ -3636,7 +3666,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       case "task_progress": {
         yield* emitThreadTokenUsage(
           context,
-          normalizeClaudeTaskProgressTokenUsage(message.usage, context),
+          normalizeClaudeTaskProgressTokenUsage(message.task_id, message.usage, context),
           {
             rawMethod: "claude/system/task_progress",
             rawPayload: message,
@@ -3703,7 +3733,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         context.liveTaskIds.delete(message.task_id);
         yield* emitThreadTokenUsage(
           context,
-          normalizeClaudeTaskProgressTokenUsage(message.usage, context),
+          normalizeClaudeTaskProgressTokenUsage(message.task_id, message.usage, context),
           {
             rawMethod: "claude/system/task_notification",
             rawPayload: message,
@@ -4903,6 +4933,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         lastKnownContextWindow: initialContextWindow,
         lastKnownTokenUsage: undefined,
         lastKnownTotalProcessedTokens: undefined,
+        taskUsageById: new Map(),
+        taskUsageTotals: { totalTokens: 0, toolUses: 0, durationMs: 0 },
         lastAssistantUuid: resumeState?.resumeSessionAt,
         lastThreadStartedId: undefined,
         announcedUsageLimits: undefined,
