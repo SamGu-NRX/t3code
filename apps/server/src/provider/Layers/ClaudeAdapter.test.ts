@@ -5668,7 +5668,31 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("does not treat total-only Claude result usage as active context", () => {
+  it.effect.each([
+    {
+      name: "does not treat total-only Claude result usage as active context",
+      usage: { total_tokens: 535_000 },
+      expectedUsedTokens: undefined,
+    },
+    {
+      name: "does not treat a total-only result iteration as active context",
+      usage: { total_tokens: 535_000, iterations: [{ total_tokens: 535_000 }] },
+      expectedUsedTokens: undefined,
+    },
+    {
+      name: "does not use aggregate input when the selected iteration is total-only",
+      usage: { input_tokens: 535_000, iterations: [{ total_tokens: 535_000 }] },
+      expectedUsedTokens: undefined,
+    },
+    {
+      name: "uses active input and output from the selected result iteration",
+      usage: {
+        input_tokens: 535_000,
+        iterations: [{ input_tokens: 4_000, output_tokens: 200 }],
+      },
+      expectedUsedTokens: 4_200,
+    },
+  ])("$name", ({ usage, expectedUsedTokens }) => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -5700,9 +5724,7 @@ describe("ClaudeAdapterLive", () => {
         result: "done",
         stop_reason: "end_turn",
         session_id: "sdk-session-result-total-only",
-        usage: {
-          total_tokens: 535000,
-        },
+        usage,
         modelUsage: {
           [SYNTHETIC_CLAUDE_CAPABLE_MODEL]: {
             contextWindow: 200000,
@@ -5714,10 +5736,14 @@ describe("ClaudeAdapterLive", () => {
 
       const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
       const usageEvent = runtimeEvents.find((event) => event.type === "thread.token-usage.updated");
-      // 535,000 is the session's cumulative spend, not context occupancy. With
-      // no active reading in the turn there is nothing truthful to show, and
-      // clamping it to the window rendered a full meter.
-      assert.equal(usageEvent, undefined);
+      if (expectedUsedTokens === undefined) {
+        assert.equal(usageEvent, undefined);
+      } else {
+        assert.equal(usageEvent?.type, "thread.token-usage.updated");
+        if (usageEvent?.type === "thread.token-usage.updated") {
+          assert.equal(usageEvent.payload.usage.usedTokens, expectedUsedTokens);
+        }
+      }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

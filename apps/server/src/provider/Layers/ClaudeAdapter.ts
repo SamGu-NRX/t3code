@@ -2528,12 +2528,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       result?.usage && typeof result.usage === "object" && !Array.isArray(result.usage)
         ? (result.usage as Record<string, unknown>)
         : undefined;
-    const hasResultUsageIteration =
-      resultUsageRecord !== undefined && lastClaudeUsageIteration(resultUsageRecord) !== undefined;
+    const selectedResultUsage = resultUsageRecord
+      ? (lastClaudeUsageIteration(resultUsageRecord) ?? resultUsageRecord)
+      : undefined;
     const resultHasActiveUsage =
-      resultUsageRecord !== undefined &&
-      (hasResultUsageIteration ||
-        claudeUsageInputTokens(resultUsageRecord) + claudeUsageOutputTokens(resultUsageRecord) > 0);
+      selectedResultUsage !== undefined &&
+      claudeUsageInputTokens(selectedResultUsage) + claudeUsageOutputTokens(selectedResultUsage) >
+        0;
     const resultTotalOnly =
       resultUsageRecord !== undefined &&
       !resultHasActiveUsage &&
