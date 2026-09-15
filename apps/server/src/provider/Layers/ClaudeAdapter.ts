@@ -3786,11 +3786,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         }
         return;
       case "model_refusal_fallback": {
-        // A refusal retry swaps the model for the rest of the session, so the
-        // window lookup has to follow it. `currentApiModelId` deliberately
+        // A session refusal retry changes the parent model, so the window
+        // lookup has to follow it. `currentApiModelId` deliberately
         // does not: it mirrors the user's selection for `setModel`, and moving
         // it here would make the next turn re-send the refused model.
-        if (message.direction === "retry") {
+        if (message.direction === "retry" && message.scope !== "local") {
           const fallbackModel = trimmedString(message.fallback_model);
           if (fallbackModel) {
             context.observedApiModelId = fallbackModel;

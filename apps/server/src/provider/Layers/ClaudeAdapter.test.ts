@@ -5369,14 +5369,18 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("follows a persistent refusal fallback to the model that ran", () => {
+  it.effect.each([
+    { scope: undefined, expectedWindow: 200_000 },
+    { scope: "session" as const, expectedWindow: 200_000 },
+    { scope: "local" as const, expectedWindow: 1_000_000 },
+  ])("uses the parent window after a $scope refusal fallback", ({ scope, expectedWindow }) => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
-      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
-      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
-        Effect.sync(() => runtimeEvents.push(event)),
-      ).pipe(Effect.forkChild);
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
 
       yield* adapter.startSession({
         threadId: THREAD_ID,
@@ -5393,20 +5397,21 @@ describe("ClaudeAdapterLive", () => {
       harness.query.emit({
         type: "system",
         subtype: "init",
-        model: SYNTHETIC_CLAUDE_STANDARD_MODEL,
+        model: `${SYNTHETIC_CLAUDE_CAPABLE_MODEL}[expanded]`,
         session_id: "sdk-session-refusal",
         uuid: "refusal-init",
       } as unknown as SDKMessage);
 
-      // A refusal retry swaps the model for the rest of the session, so the
-      // window has to be measured against the model that actually ran.
+      // Session fallbacks change the parent model; local fallbacks do not.
       harness.query.emit({
         type: "system",
         subtype: "model_refusal_fallback",
         trigger: "refusal",
         direction: "retry",
-        original_model: SYNTHETIC_CLAUDE_STANDARD_MODEL,
-        fallback_model: `${SYNTHETIC_CLAUDE_CAPABLE_MODEL}[expanded]`,
+        ...(scope !== undefined ? { scope } : {}),
+        original_model: `${SYNTHETIC_CLAUDE_CAPABLE_MODEL}[expanded]`,
+        fallback_model: SYNTHETIC_CLAUDE_STANDARD_MODEL,
+        content: "Retrying with the fallback model.",
         request_id: null,
         session_id: "sdk-session-refusal",
         uuid: "refusal-swap",
@@ -5430,18 +5435,14 @@ describe("ClaudeAdapterLive", () => {
       } as unknown as SDKMessage);
       harness.query.finish();
 
-      yield* Effect.yieldNow;
-      yield* Effect.yieldNow;
-      yield* Effect.yieldNow;
-      yield* Fiber.interrupt(runtimeEventsFiber);
-
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
       const usageEvents = runtimeEvents.filter(
         (event) => event.type === "thread.token-usage.updated",
       );
       const latest = usageEvents.at(-1);
       assert.equal(latest?.type, "thread.token-usage.updated");
       if (latest?.type === "thread.token-usage.updated") {
-        assert.equal(latest.payload.usage.maxTokens, 1_000_000);
+        assert.equal(latest.payload.usage.maxTokens, expectedWindow);
       }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
