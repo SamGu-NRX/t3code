@@ -4962,10 +4962,10 @@ describe("ClaudeAdapterLive", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
-      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
-      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
-        Effect.sync(() => runtimeEvents.push(event)),
-      ).pipe(Effect.forkChild);
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "task.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
 
       yield* adapter.startSession({
         threadId: THREAD_ID,
@@ -5007,12 +5007,18 @@ describe("ClaudeAdapterLive", () => {
         session_id: "sdk-session-total-floor",
         uuid: "total-floor-large",
       } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-total-floor",
+        status: "completed",
+        summary: "Child finished",
+        usage: { total_tokens: 5_000 },
+        session_id: "sdk-session-total-floor",
+        uuid: "total-floor-completed",
+      } as unknown as SDKMessage);
 
-      yield* Effect.yieldNow;
-      yield* Effect.yieldNow;
-      yield* Effect.yieldNow;
-      yield* Fiber.interrupt(runtimeEventsFiber);
-
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
       const usageEvents = runtimeEvents.filter(
         (event) => event.type === "thread.token-usage.updated",
       );
@@ -5036,10 +5042,10 @@ describe("ClaudeAdapterLive", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
-      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
-      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
-        Effect.sync(() => runtimeEvents.push(event)),
-      ).pipe(Effect.forkChild);
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "task.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
 
       yield* adapter.startSession({
         threadId: THREAD_ID,
@@ -5078,13 +5084,18 @@ describe("ClaudeAdapterLive", () => {
         session_id: "sdk-session-child-usage",
         uuid: "task-child-progress-1",
       } as unknown as SDKMessage);
-      harness.query.finish();
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-child-1",
+        status: "completed",
+        summary: "Background agent finished",
+        usage: { total_tokens: 900_000, tool_uses: 40, duration_ms: 1_000 },
+        session_id: "sdk-session-child-usage",
+        uuid: "task-child-completed-1",
+      } as unknown as SDKMessage);
 
-      yield* Effect.yieldNow;
-      yield* Effect.yieldNow;
-      yield* Effect.yieldNow;
-      yield* Fiber.interrupt(runtimeEventsFiber);
-
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
       const usageEvents = runtimeEvents.filter(
         (event) => event.type === "thread.token-usage.updated",
       );
@@ -5107,10 +5118,10 @@ describe("ClaudeAdapterLive", () => {
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
-      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
-      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
-        Effect.sync(() => runtimeEvents.push(event)),
-      ).pipe(Effect.forkChild);
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
 
       const session = yield* adapter.startSession({
         threadId: THREAD_ID,
@@ -5143,10 +5154,7 @@ describe("ClaudeAdapterLive", () => {
         },
       } as unknown as SDKMessage);
 
-      yield* Effect.yieldNow;
-      yield* Effect.yieldNow;
-      yield* Effect.yieldNow;
-      yield* Fiber.interrupt(runtimeEventsFiber);
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
       const usageEvents = runtimeEvents.filter(
         (event) => event.type === "thread.token-usage.updated",
       );
@@ -5166,10 +5174,10 @@ describe("ClaudeAdapterLive", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
-      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
-      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
-        Effect.sync(() => runtimeEvents.push(event)),
-      ).pipe(Effect.forkChild);
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
 
       yield* adapter.startSession({
         threadId: THREAD_ID,
@@ -5209,13 +5217,8 @@ describe("ClaudeAdapterLive", () => {
           [`${SYNTHETIC_CLAUDE_CAPABLE_MODEL}[expanded]`]: { contextWindow: 1_000_000 },
         },
       } as unknown as SDKMessage);
-      harness.query.finish();
 
-      yield* Effect.yieldNow;
-      yield* Effect.yieldNow;
-      yield* Effect.yieldNow;
-      yield* Fiber.interrupt(runtimeEventsFiber);
-
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
       const usageEvents = runtimeEvents.filter(
         (event) => event.type === "thread.token-usage.updated",
       );
@@ -5234,10 +5237,10 @@ describe("ClaudeAdapterLive", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
-      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
-      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
-        Effect.sync(() => runtimeEvents.push(event)),
-      ).pipe(Effect.forkChild);
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
 
       yield* adapter.startSession({
         threadId: THREAD_ID,
@@ -5275,12 +5278,15 @@ describe("ClaudeAdapterLive", () => {
         session_id: "sdk-session-running-total",
         uuid: "task-running-total-progress",
       } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        session_id: "sdk-session-running-total",
+        uuid: "running-total-result",
+      } as unknown as SDKMessage);
 
-      yield* Effect.yieldNow;
-      yield* Effect.yieldNow;
-      yield* Effect.yieldNow;
-      yield* Fiber.interrupt(runtimeEventsFiber);
-
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
       const usageEvents = runtimeEvents.filter(
         (event) => event.type === "thread.token-usage.updated",
       );
@@ -5300,10 +5306,10 @@ describe("ClaudeAdapterLive", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
-      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
-      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
-        Effect.sync(() => runtimeEvents.push(event)),
-      ).pipe(Effect.forkChild);
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
 
       yield* adapter.startSession({
         threadId: THREAD_ID,
@@ -5347,12 +5353,8 @@ describe("ClaudeAdapterLive", () => {
         usage: { input_tokens: 4_000, output_tokens: 200 },
         modelUsage: { [SYNTHETIC_CLAUDE_CAPABLE_MODEL]: { contextWindow: 200_000 } },
       } as unknown as SDKMessage);
-      harness.query.finish();
 
-      yield* Effect.yieldNow;
-      yield* Effect.yieldNow;
-      yield* Effect.yieldNow;
-      yield* Fiber.interrupt(runtimeEventsFiber);
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
       const ev = runtimeEvents.filter((e) => e.type === "thread.token-usage.updated");
       const latest = ev.at(-1);
       assert.equal(latest?.type, "thread.token-usage.updated");
@@ -5454,10 +5456,6 @@ describe("ClaudeAdapterLive", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
-      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
-      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
-        Effect.sync(() => runtimeEvents.push(event)),
-      ).pipe(Effect.forkChild);
 
       yield* adapter.startSession({
         threadId: THREAD_ID,
@@ -5465,6 +5463,10 @@ describe("ClaudeAdapterLive", () => {
         runtimeMode: "full-access",
       });
 
+      const initEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "session.configured",
+      ).pipe(Stream.runCollect, Effect.forkChild);
       harness.query.emit({
         type: "system",
         subtype: "init",
@@ -5472,10 +5474,12 @@ describe("ClaudeAdapterLive", () => {
         session_id: "sdk-session-switch",
         uuid: "switch-init",
       } as unknown as SDKMessage);
-      yield* Effect.yieldNow;
-      yield* Effect.yieldNow;
-      yield* Effect.yieldNow;
+      yield* Fiber.join(initEventsFiber);
 
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
       // The user switches to a 200k model partway through the thread.
       yield* adapter.sendTurn({
         threadId: THREAD_ID,
@@ -5504,13 +5508,8 @@ describe("ClaudeAdapterLive", () => {
           [SYNTHETIC_CLAUDE_STANDARD_MODEL]: { contextWindow: 200_000 },
         },
       } as unknown as SDKMessage);
-      harness.query.finish();
 
-      yield* Effect.yieldNow;
-      yield* Effect.yieldNow;
-      yield* Effect.yieldNow;
-      yield* Fiber.interrupt(runtimeEventsFiber);
-
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
       const usageEvents = runtimeEvents.filter(
         (event) => event.type === "thread.token-usage.updated",
       );
@@ -5529,10 +5528,10 @@ describe("ClaudeAdapterLive", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
-      const runtimeEventsFiber = yield* Stream.runForEach(
+      const firstTurnEventsFiber = yield* Stream.takeUntil(
         adapter.streamEvents,
-        () => Effect.void,
-      ).pipe(Effect.forkChild);
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
 
       yield* adapter.startSession({
         threadId: THREAD_ID,
@@ -5578,9 +5577,7 @@ describe("ClaudeAdapterLive", () => {
         session_id: "sdk-session-refusal-resend",
         usage: { input_tokens: 1_000, output_tokens: 10 },
       } as unknown as SDKMessage);
-      yield* Effect.yieldNow;
-      yield* Effect.yieldNow;
-      yield* Effect.yieldNow;
+      yield* Fiber.join(firstTurnEventsFiber);
 
       // The selection has not changed, so the second turn must not call
       // setModel at all — least of all with the model the API just refused.
@@ -5593,8 +5590,6 @@ describe("ClaudeAdapterLive", () => {
       assert.deepEqual(harness.query.setModelCalls, [
         `${SYNTHETIC_CLAUDE_CAPABLE_MODEL}[expanded]`,
       ]);
-
-      yield* Fiber.interrupt(runtimeEventsFiber);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -5852,10 +5847,10 @@ describe("ClaudeAdapterLive", () => {
       return Effect.gen(function* () {
         const adapter = yield* ClaudeAdapter;
 
-        const runtimeEvents: Array<ProviderRuntimeEvent> = [];
-        const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
-          Effect.sync(() => runtimeEvents.push(event)),
-        ).pipe(Effect.forkChild);
+        const runtimeEventsFiber = yield* Stream.takeUntil(
+          adapter.streamEvents,
+          (event) => event.type === "turn.completed",
+        ).pipe(Stream.runCollect, Effect.forkChild);
 
         yield* adapter.startSession({
           threadId: THREAD_ID,
@@ -5922,12 +5917,8 @@ describe("ClaudeAdapterLive", () => {
             },
           },
         } as unknown as SDKMessage);
-        harness.query.finish();
 
-        yield* Effect.yieldNow;
-        yield* Effect.yieldNow;
-        yield* Effect.yieldNow;
-        yield* Fiber.interrupt(runtimeEventsFiber);
+        const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
         const usageEvents = runtimeEvents.filter(
           (event) => event.type === "thread.token-usage.updated",
         );
