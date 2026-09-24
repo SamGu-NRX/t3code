@@ -1,4 +1,5 @@
 import {
+  CONTEXT_WINDOW_OPTION_ID,
   type CustomModelSetting,
   type ModelCapabilities,
   type ModelSelection,
@@ -7,6 +8,8 @@ import {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import {
+  type CustomModelDefinition,
+  customModelCapabilitiesWithContextWindows,
   getModelSelectionStringOptionValue,
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
@@ -72,12 +75,35 @@ export function resolveClaudeModelCatalog(manifest: ModelManifestData): ClaudeMo
 export const BUNDLED_CLAUDE_MODEL_CATALOG = resolveClaudeModelCatalog(BUNDLED_MODEL_MANIFEST);
 
 /**
+ * The runtime profile for a custom entry. Only declared context windows map
+ * to anything: each window's token count, and its model suffix when it has
+ * one. The context choice is then resolved exactly like a bundled model's.
+ */
+function customEntryRuntime(entry: CustomModelDefinition): ClaudeCodeProfile {
+  if (entry.contextWindows === null) return {};
+  const suffixes = Object.fromEntries(
+    entry.contextWindows.flatMap((window) =>
+      window.modelSuffix ? [[window.id, window.modelSuffix] as const] : [],
+    ),
+  );
+  return {
+    contextWindowTokens: Object.fromEntries(
+      entry.contextWindows.map((window) => [window.id, window.tokens] as const),
+    ),
+    ...(Object.keys(suffixes).length > 0
+      ? { modelSuffixes: { [CONTEXT_WINDOW_OPTION_ID]: suffixes } }
+      : {}),
+  };
+}
+
+/**
  * Scope the catalog to one instance's settings: custom model slugs stay opaque
  * (a built-in alias they shadow is dropped, canonical slugs and capabilities
- * are preserved), and custom entries that declare their own capabilities are
- * appended so the adapter resolves effort / fast mode / thinking against the
- * user's descriptors instead of the empty default. Custom entries carry no
- * runtime profile, so option values pass through to Claude Code verbatim.
+ * are preserved), and custom entries that declare capabilities or context
+ * windows are appended so the adapter resolves effort / fast mode / thinking
+ * against the user's descriptors instead of the empty default. Other option
+ * values pass through to Claude Code verbatim; declared context windows map
+ * to a token count and optional model suffix (see `customEntryRuntime`).
  */
 export function scopeClaudeModelCatalog(
   catalog: ClaudeModelCatalog,
@@ -102,15 +128,16 @@ export function scopeClaudeModelCatalog(
   const builtInSlugs = new Set(builtInModels.map((entry) => entry.model.slug));
   const customCatalogModels: Array<ClaudeCatalogModel> = [];
   for (const entry of customEntries) {
-    if (!entry.capabilities || builtInSlugs.has(entry.slug)) continue;
+    const capabilities = customModelCapabilitiesWithContextWindows(entry, null);
+    if (!capabilities || builtInSlugs.has(entry.slug)) continue;
     customCatalogModels.push({
       model: {
         slug: entry.slug,
         name: entry.name,
         isCustom: true,
-        capabilities: entry.capabilities,
+        capabilities,
       },
-      runtime: {},
+      runtime: customEntryRuntime(entry),
       compatibility: {},
     });
   }
@@ -247,6 +274,22 @@ export function resolveClaudeCatalogApiModelId(
     if (typeof value === "string" && suffixes[value]) return `${slug}${suffixes[value]}`;
   }
   return slug;
+}
+
+/**
+ * The window Claude Code must be launched with for this selection, or
+ * undefined. Only a custom entry's declared window counts: Claude Code sizes
+ * the models it recognizes itself, and for other model ids it assumes 200K
+ * unless `CLAUDE_CODE_MAX_CONTEXT_TOKENS` says otherwise. Claude Code reads
+ * that variable once per process, so a different value needs a new session.
+ */
+export function resolveClaudeCatalogLaunchContextWindowTokens(
+  catalog: ClaudeModelCatalog,
+  modelSelection: ModelSelection | undefined,
+): number | undefined {
+  const entry = resolveClaudeCatalogModel(catalog, modelSelection?.model);
+  if (entry?.model.isCustom !== true) return undefined;
+  return resolveClaudeCatalogContextWindowTokens(catalog, modelSelection);
 }
 
 export function resolveClaudeCatalogContextWindowTokens(

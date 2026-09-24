@@ -103,6 +103,7 @@ import {
   resolveClaudeCatalogApiModelId,
   resolveClaudeCatalogContextWindowTokens,
   resolveClaudeCatalogEffort,
+  resolveClaudeCatalogLaunchContextWindowTokens,
   resolveClaudeModelSlug,
   scopeClaudeModelCatalog,
 } from "../ClaudeModelCatalog.ts";
@@ -446,6 +447,13 @@ interface ClaudeSessionContext {
   /** Task ids that have started and not yet reached a terminal state. */
   readonly liveTaskIds: Set<string>;
   turnState: ClaudeTurnState | undefined;
+  /**
+   * The window this process was launched with for a custom model that
+   * declares one. It stays the parent's context capacity: a result's
+   * `modelUsage` also lists subagent models, so their larger windows must
+   * not replace it.
+   */
+  readonly launchContextWindowTokens: number | undefined;
   lastKnownContextWindow: number | undefined;
   lastKnownTokenUsage: ThreadTokenUsageSnapshot | undefined;
   lastKnownTotalProcessedTokens: number | undefined;
@@ -682,6 +690,10 @@ function maxClaudeContextWindowFromModelUsage(
   }
 
   return maxContextWindow;
+}
+
+function formatContextWindowLimit(tokens: number | undefined): string {
+  return tokens === undefined ? "default" : `${tokens.toLocaleString("en-US")}-token`;
 }
 
 function selectedClaudeContextWindow(
@@ -2663,7 +2675,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     errorMessage?: string,
     result?: SDKResultMessage,
   ) {
-    const resultContextWindow = maxClaudeContextWindowFromModelUsage(result?.modelUsage);
+    const resultContextWindow =
+      context.launchContextWindowTokens === undefined
+        ? maxClaudeContextWindowFromModelUsage(result?.modelUsage)
+        : undefined;
     if (resultContextWindow !== undefined) {
       context.lastKnownContextWindow = resultContextWindow;
     }
@@ -4850,6 +4865,17 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ? resolveClaudeCatalogApiModelId(modelCatalog, modelSelection)
         : undefined;
       const initialContextWindow = selectedClaudeContextWindow(modelCatalog, modelSelection);
+      const launchContextWindowTokens = resolveClaudeCatalogLaunchContextWindowTokens(
+        modelCatalog,
+        modelSelection,
+      );
+      const launchEnvironment =
+        launchContextWindowTokens === undefined
+          ? claudeEnvironment
+          : {
+              ...claudeEnvironment,
+              CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(launchContextWindowTokens),
+            };
       const rawEffort = getModelSelectionStringOptionValue(modelSelection, "effort");
       const effort =
         resolveClaudeCatalogEffort(modelCatalog, modelSelection?.model, rawEffort) ?? null;
@@ -4947,7 +4973,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         canUseTool,
         onUserDialog,
         supportedDialogKinds: ["resume_return"],
-        env: McpProviderSession.withAgentDeviceEnvironment(claudeEnvironment, mcpSession),
+        env: McpProviderSession.withAgentDeviceEnvironment(launchEnvironment, mcpSession),
         additionalDirectories,
         ...(Object.keys(extraArgs).length > 0 ? { extraArgs } : {}),
         ...(mcpSession
@@ -5051,6 +5077,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         workflowMemberFingerprints,
         liveTaskIds,
         turnState: undefined,
+        launchContextWindowTokens,
         lastKnownContextWindow: initialContextWindow,
         lastKnownTokenUsage: undefined,
         lastKnownTotalProcessedTokens: undefined,
@@ -5146,6 +5173,20 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const modelSelection = selectedModel
       ? { ...selectedModel, model: resolveClaudeModelSlug(modelCatalog, selectedModel.model) }
       : undefined;
+    // Claude Code reads its window for a custom model once, at launch. The
+    // orchestrator restarts the session when the selection changes; a turn
+    // that still reaches this session with another window is refused rather
+    // than sent under the old one.
+    const launchContextWindowTokens = modelSelection
+      ? resolveClaudeCatalogLaunchContextWindowTokens(modelCatalog, modelSelection)
+      : context.launchContextWindowTokens;
+    if (launchContextWindowTokens !== context.launchContextWindowTokens) {
+      return yield* new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method: "turn/start",
+        detail: `Claude Code was launched with a ${formatContextWindowLimit(context.launchContextWindowTokens)} context window and cannot switch to ${formatContextWindowLimit(launchContextWindowTokens)} mid-session. Start the session again with the new model selection.`,
+      });
+    }
     if (modelSelection) {
       context.startInput = { ...context.startInput, modelSelection };
     }

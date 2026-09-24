@@ -1,4 +1,7 @@
 import {
+  CONTEXT_WINDOW_OPTION_ID,
+  type CustomModelContextWindow,
+  CustomModelContextWindows,
   type CustomModelSetting,
   MODEL_SLUG_ALIASES_BY_PROVIDER,
   ModelCapabilities,
@@ -260,16 +263,20 @@ export interface CustomModelDefinition {
   readonly slug: string;
   readonly name: string;
   readonly capabilities: ModelCapabilities | null;
+  /** Declared launch windows, or null when the entry declares none. */
+  readonly contextWindows: ReadonlyArray<CustomModelContextWindow> | null;
 }
 
 const decodeCustomModelCapabilities = Schema.decodeUnknownOption(ModelCapabilities);
+const decodeCustomModelContextWindows = Schema.decodeUnknownOption(CustomModelContextWindows);
 
 /**
  * Read a `customModels` setting into resolved definitions. Accepts the typed
  * union as well as the opaque `providerInstances[id].config` blob clients see,
- * so it tolerates bare slugs, malformed rows, and unparseable capabilities
- * (dropped rather than failing the whole list). Slugs are trimmed and
- * deduplicated, first occurrence wins; `name` falls back to the slug.
+ * so it tolerates bare slugs, malformed rows, and unparseable capabilities or
+ * context windows (dropped rather than failing the whole list; the server's
+ * settings decode is where malformed entries are rejected). Slugs are trimmed
+ * and deduplicated, first occurrence wins; `name` falls back to the slug.
  */
 export function readCustomModelEntries(value: unknown): CustomModelDefinition[] {
   if (!Array.isArray(value)) return [];
@@ -280,7 +287,12 @@ export function readCustomModelEntries(value: unknown): CustomModelDefinition[] 
       typeof raw === "string"
         ? { slug: raw }
         : raw !== null && typeof raw === "object"
-          ? (raw as { slug?: unknown; name?: unknown; capabilities?: unknown })
+          ? (raw as {
+              slug?: unknown;
+              name?: unknown;
+              capabilities?: unknown;
+              contextWindows?: unknown;
+            })
           : null;
     if (!record) continue;
     const slug = normalizeCustomModelSlug(typeof record.slug === "string" ? record.slug : null);
@@ -292,12 +304,19 @@ export function readCustomModelEntries(value: unknown): CustomModelDefinition[] 
       record.capabilities === undefined || record.capabilities === null
         ? null
         : Option.getOrNull(decodeCustomModelCapabilities(record.capabilities));
+    const contextWindows =
+      record.contextWindows === undefined || record.contextWindows === null
+        ? null
+        : Option.getOrNull(decodeCustomModelContextWindows(record.contextWindows));
+    // Declared windows own the context choice; a hand-written duplicate is ignored.
+    const optionDescriptors = (capabilities?.optionDescriptors ?? []).filter(
+      (descriptor) => contextWindows === null || descriptor.id !== CONTEXT_WINDOW_OPTION_ID,
+    );
     entries.push({
       slug,
       name,
-      capabilities: capabilities
-        ? createModelCapabilities({ optionDescriptors: capabilities.optionDescriptors ?? [] })
-        : null,
+      capabilities: capabilities ? createModelCapabilities({ optionDescriptors }) : null,
+      contextWindows,
     });
   }
   return entries;
@@ -310,14 +329,60 @@ export function readCustomModelEntries(value: unknown): CustomModelDefinition[] 
 export function toCustomModelSetting(entry: CustomModelDefinition): CustomModelSetting {
   const descriptors = entry.capabilities?.optionDescriptors ?? [];
   const name = entry.name !== entry.slug ? entry.name : undefined;
-  if (!name && descriptors.length === 0) return entry.slug;
+  if (!name && descriptors.length === 0 && entry.contextWindows === null) return entry.slug;
   return {
     slug: entry.slug,
     ...(name ? { name } : {}),
     ...(descriptors.length > 0
       ? { capabilities: createModelCapabilities({ optionDescriptors: descriptors }) }
       : {}),
+    ...(entry.contextWindows !== null ? { contextWindows: entry.contextWindows } : {}),
   };
+}
+
+/**
+ * The picker option for a custom model's declared windows. It has the same
+ * id and label as the bundled catalog's context choice, so the traits menu
+ * renders it the same way; the default is the flagged window, else the first.
+ */
+export function customModelContextWindowDescriptor(
+  contextWindows: ReadonlyArray<CustomModelContextWindow>,
+): ProviderOptionDescriptor {
+  const defaultId =
+    contextWindows.find((window) => window.isDefault === true)?.id ?? contextWindows[0]?.id;
+  return {
+    id: CONTEXT_WINDOW_OPTION_ID,
+    label: "Context Window",
+    type: "select",
+    options: contextWindows.map((window) => ({
+      id: window.id,
+      label: window.label,
+      ...(window.id === defaultId ? { isDefault: true } : {}),
+    })),
+  };
+}
+
+/**
+ * A custom entry's capabilities with its declared windows appended as the
+ * context choice. `fallback` stands in when the entry declares no
+ * capabilities of its own (a driver's default set, or empty). Returns null
+ * only when there is nothing to show.
+ */
+export function customModelCapabilitiesWithContextWindows(
+  entry: CustomModelDefinition,
+  fallback: ModelCapabilities | null,
+): ModelCapabilities | null {
+  const base = entry.capabilities ?? fallback;
+  if (entry.contextWindows === null) return base;
+  const optionDescriptors = (base?.optionDescriptors ?? []).filter(
+    (descriptor) => descriptor.id !== CONTEXT_WINDOW_OPTION_ID,
+  );
+  return createModelCapabilities({
+    optionDescriptors: [
+      ...optionDescriptors,
+      customModelContextWindowDescriptor(entry.contextWindows),
+    ],
+  });
 }
 
 export function resolveSelectableModel(

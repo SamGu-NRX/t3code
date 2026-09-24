@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
-import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ProviderDriverKind } from "./providerInstance.ts";
 
 export const ProviderOptionDescriptorType = Schema.Literals(["select", "boolean"]);
@@ -127,16 +127,66 @@ export const ModelCapabilities = Schema.Struct({
 });
 export type ModelCapabilities = typeof ModelCapabilities.Type;
 
+/** Option id the picker and adapters use for a model's context window choice. */
+export const CONTEXT_WINDOW_OPTION_ID = "contextWindow";
+
+/**
+ * One context window a custom model can be launched with. `id` is the value
+ * stored in the thread's model selection. `tokens` is the full window, which
+ * the adapter hands to the provider at launch and uses as the context meter's
+ * capacity. `modelSuffix` is appended to the slug for the launched model id,
+ * for setups that route a longer window through a separate model name, the
+ * way the bundled catalog appends `[1m]`.
+ */
+export const CustomModelContextWindow = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString,
+  tokens: PositiveInt,
+  isDefault: Schema.optional(Schema.Boolean),
+  modelSuffix: Schema.optional(TrimmedNonEmptyString),
+});
+export type CustomModelContextWindow = typeof CustomModelContextWindow.Type;
+
+export const CustomModelContextWindows = Schema.Array(CustomModelContextWindow).check(
+  Schema.makeFilter((windows) => {
+    if (windows.length === 0) return "contextWindows needs at least one window";
+    const ids = new Set<string>();
+    for (const window of windows) {
+      if (ids.has(window.id)) return `context window id "${window.id}" is used twice`;
+      ids.add(window.id);
+    }
+    return windows.filter((window) => window.isDefault === true).length > 1
+      ? "only one context window can be the default"
+      : undefined;
+  }),
+);
+
 /**
  * A user-authored custom model. `name` and `capabilities` are optional so a
  * bare slug keeps its driver-default presentation; when `capabilities` is
  * set, its descriptors replace the driver default in the model picker.
+ *
+ * `contextWindows` lists the windows the model can launch with. Drivers that
+ * support it (Claude) show them as the model's context window choice, launch
+ * the provider with the chosen window, and size the context meter from it.
+ * The choice is generated from this list, so `capabilities` may not also
+ * declare a `contextWindow` option.
  */
 export const CustomModelEntry = Schema.Struct({
   slug: TrimmedNonEmptyString,
   name: Schema.optional(TrimmedNonEmptyString),
   capabilities: Schema.optional(ModelCapabilities),
-});
+  contextWindows: Schema.optional(CustomModelContextWindows),
+}).check(
+  Schema.makeFilter((entry) =>
+    entry.contextWindows !== undefined &&
+    (entry.capabilities?.optionDescriptors ?? []).some(
+      (descriptor) => descriptor.id === CONTEXT_WINDOW_OPTION_ID,
+    )
+      ? `custom model "${entry.slug}" declares contextWindows and a "${CONTEXT_WINDOW_OPTION_ID}" option; keep only contextWindows`
+      : undefined,
+  ),
+);
 export type CustomModelEntry = typeof CustomModelEntry.Type;
 
 /** On-disk custom model setting: the legacy bare slug, or a full entry. */

@@ -7,7 +7,9 @@ import {
   formatClaudeVersionUpgradeMessage,
   normalizeClaudeCatalogEffort,
   resolveClaudeCatalogApiModelId,
+  resolveClaudeCatalogContextWindowTokens,
   resolveClaudeCatalogEffort,
+  resolveClaudeCatalogLaunchContextWindowTokens,
   resolveClaudeModelCatalog,
   resolveClaudeModelsForVersion,
   resolveClaudeModelSlug,
@@ -189,5 +191,55 @@ describe("Claude model catalog", () => {
       resolveClaudeModelsForVersion(catalog, "3.2.0").map((model) => model.slug),
       ["claude-synthetic-next", "claude-custom-tuned"],
     );
+  });
+
+  it("launches a custom model with the context window picked from its declared list", () => {
+    const instanceId = ProviderInstanceId.make("claudeAgent");
+    const catalog = scopeClaudeModelCatalog(resolveClaudeModelCatalog(manifest()), [
+      {
+        slug: "gateway-model",
+        contextWindows: [
+          { id: "normal", label: "Normal", tokens: 272_000, isDefault: true },
+          { id: "long", label: "Long", tokens: 872_000, modelSuffix: "-long" },
+        ],
+      },
+    ]);
+    const select = (options: ReadonlyArray<{ id: string; value: string }>) => ({
+      instanceId,
+      model: "gateway-model",
+      options,
+    });
+
+    // No explicit choice resolves to the declared default and the bare slug.
+    assert.strictEqual(resolveClaudeCatalogApiModelId(catalog, select([])), "gateway-model");
+    assert.strictEqual(resolveClaudeCatalogLaunchContextWindowTokens(catalog, select([])), 272_000);
+
+    const long = select([{ id: "contextWindow", value: "long" }]);
+    assert.strictEqual(resolveClaudeCatalogApiModelId(catalog, long), "gateway-model-long");
+    assert.strictEqual(resolveClaudeCatalogLaunchContextWindowTokens(catalog, long), 872_000);
+    assert.strictEqual(resolveClaudeCatalogContextWindowTokens(catalog, long), 872_000);
+
+    // An unknown value falls back to the default rather than launching unsized.
+    assert.strictEqual(
+      resolveClaudeCatalogLaunchContextWindowTokens(
+        catalog,
+        select([{ id: "contextWindow", value: "huge" }]),
+      ),
+      272_000,
+    );
+  });
+
+  it("never exports a launch window for a built-in model", () => {
+    const catalog = resolveClaudeModelCatalog(manifest());
+    const builtIn = {
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      model: "claude-synthetic-next",
+      options: [{ id: "contextWindow", value: "large" }],
+    };
+    assert.strictEqual(
+      resolveClaudeCatalogApiModelId(catalog, builtIn),
+      "claude-synthetic-next[large]",
+    );
+    assert.strictEqual(resolveClaudeCatalogLaunchContextWindowTokens(catalog, builtIn), undefined);
   });
 });

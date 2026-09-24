@@ -92,6 +92,23 @@ describe("providerModelsFromSettings", () => {
     expect(models.map((model) => model.slug)).toEqual(["claude-opus-4-8", "opus"]);
     expect(models[1]?.isCustom).toBe(true);
   });
+
+  it("offers declared context windows only for a driver that launches them", () => {
+    const entry = {
+      slug: "gateway-model",
+      contextWindows: [
+        { id: "normal", label: "Normal", tokens: 272_000 },
+        { id: "long", label: "Long", tokens: 872_000 },
+      ],
+    };
+    const optionIds = (launchesContextWindows: boolean) =>
+      providerModelsFromSettings([], [entry], OPENCODE_CUSTOM_MODEL_CAPABILITIES, {
+        launchesContextWindows,
+      })[0]?.capabilities?.optionDescriptors?.map((descriptor) => descriptor.id);
+
+    expect(optionIds(true)).toEqual(["variant", "agent", "contextWindow"]);
+    expect(optionIds(false)).toEqual(["variant", "agent"]);
+  });
 });
 
 describe("parseGenericCliVersion", () => {

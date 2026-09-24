@@ -15,7 +15,10 @@ import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { readCustomModelEntries } from "@t3tools/shared/model";
+import {
+  customModelCapabilitiesWithContextWindows,
+  readCustomModelEntries,
+} from "@t3tools/shared/model";
 import { isWindowsCommandNotFound } from "../processRunner.ts";
 import { createProviderVersionAdvisory } from "./providerMaintenance.ts";
 import { collectUint8StreamText } from "../stream/collectUint8StreamText.ts";
@@ -122,11 +125,17 @@ export function parseGenericCliVersion(output: string): string | null {
  * Append the user's custom models after the built-ins. A custom entry that
  * declares its own capabilities keeps them; a bare slug gets the driver's
  * default set. Slugs that collide with a built-in are dropped.
+ *
+ * Declared `contextWindows` become the model's context choice only for a
+ * driver that passes `launchesContextWindows`, meaning its adapter launches
+ * the provider with the chosen window. Other drivers leave the choice out
+ * rather than offer one that would change nothing.
  */
 export function providerModelsFromSettings(
   builtInModels: ReadonlyArray<ServerProviderModel>,
   customModels: ReadonlyArray<CustomModelSetting>,
   customModelCapabilities: ModelCapabilities,
+  options?: { readonly launchesContextWindows: boolean },
 ): ReadonlyArray<ServerProviderModel> {
   const resolvedBuiltInModels = [...builtInModels];
   const seen = new Set(resolvedBuiltInModels.map((model) => model.slug));
@@ -141,7 +150,10 @@ export function providerModelsFromSettings(
       slug: entry.slug,
       name: entry.name,
       isCustom: true,
-      capabilities: entry.capabilities ?? customModelCapabilities,
+      capabilities:
+        options?.launchesContextWindows === true
+          ? customModelCapabilitiesWithContextWindows(entry, customModelCapabilities)
+          : (entry.capabilities ?? customModelCapabilities),
     });
   }
 

@@ -52,6 +52,9 @@ const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabili
   optionDescriptors: [],
 });
 
+// ClaudeAdapter launches a custom model with its chosen declared window.
+const CLAUDE_CUSTOM_MODEL_OPTIONS = { launchesContextWindows: true } as const;
+
 const CLAUDE_PRESENTATION = {
   displayName: "Claude",
   showInteractionModeToggle: true,
@@ -437,6 +440,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     modelCatalog.models.map((entry) => entry.model),
     claudeSettings.customModels,
     DEFAULT_CLAUDE_MODEL_CAPABILITIES,
+    CLAUDE_CUSTOM_MODEL_OPTIONS,
   );
 
   if (!claudeSettings.enabled) {
@@ -527,6 +531,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     resolveClaudeModelsForVersion(modelCatalog, parsedVersion),
     claudeSettings.customModels,
     DEFAULT_CLAUDE_MODEL_CAPABILITIES,
+    CLAUDE_CUSTOM_MODEL_OPTIONS,
   );
   const versionUpgradeMessage = formatClaudeVersionUpgradeMessage(modelCatalog, parsedVersion);
 
@@ -602,6 +607,7 @@ export const makePendingClaudeProvider = (
       modelCatalog.models.map((entry) => entry.model),
       claudeSettings.customModels,
       DEFAULT_CLAUDE_MODEL_CAPABILITIES,
+      CLAUDE_CUSTOM_MODEL_OPTIONS,
     );
 
     if (!claudeSettings.enabled) {

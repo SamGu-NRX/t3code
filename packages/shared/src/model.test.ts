@@ -7,6 +7,8 @@ import {
   buildProviderOptionSelectionsFromDescriptors,
   createModelCapabilities,
   createModelSelection,
+  type CustomModelDefinition,
+  customModelCapabilitiesWithContextWindows,
   getModelSelectionBooleanOptionValue,
   getModelSelectionStringOptionValue,
   getProviderOptionDescriptors,
@@ -220,27 +222,135 @@ describe("readCustomModelEntries", () => {
         42,
       ]),
     ).toEqual([
-      { slug: "bare", name: "bare", capabilities: null },
-      { slug: "named", name: "Named", capabilities },
+      { slug: "bare", name: "bare", capabilities: null, contextWindows: null },
+      { slug: "named", name: "Named", capabilities, contextWindows: null },
     ]);
   });
 
   it("drops unparseable capabilities but keeps the entry", () => {
     expect(
       readCustomModelEntries([{ slug: "x", capabilities: { optionDescriptors: "nope" } }]),
-    ).toEqual([{ slug: "x", name: "x", capabilities: null }]);
+    ).toEqual([{ slug: "x", name: "x", capabilities: null, contextWindows: null }]);
     expect(readCustomModelEntries("not a list")).toEqual([]);
   });
 
   it("writes the compact stored shape back", () => {
-    expect(toCustomModelSetting({ slug: "x", name: "x", capabilities: null })).toBe("x");
     expect(
-      toCustomModelSetting({ slug: "x", name: "x", capabilities: { optionDescriptors: [] } }),
+      toCustomModelSetting({ slug: "x", name: "x", capabilities: null, contextWindows: null }),
     ).toBe("x");
-    expect(toCustomModelSetting({ slug: "x", name: "X", capabilities })).toEqual({
+    expect(
+      toCustomModelSetting({
+        slug: "x",
+        name: "x",
+        capabilities: { optionDescriptors: [] },
+        contextWindows: null,
+      }),
+    ).toBe("x");
+    expect(
+      toCustomModelSetting({ slug: "x", name: "X", capabilities, contextWindows: null }),
+    ).toEqual({
       slug: "x",
       name: "X",
       capabilities,
     });
+  });
+
+  const contextWindows = [
+    { id: "normal", label: "Normal", tokens: 272_000, isDefault: true },
+    { id: "long", label: "Long", tokens: 872_000, modelSuffix: "-long" },
+  ];
+
+  it("reads declared context windows and round-trips them", () => {
+    const [entry] = readCustomModelEntries([{ slug: "gateway-model", contextWindows }]);
+    expect(entry).toEqual({
+      slug: "gateway-model",
+      name: "gateway-model",
+      capabilities: null,
+      contextWindows,
+    });
+    expect(toCustomModelSetting(entry!)).toEqual({ slug: "gateway-model", contextWindows });
+  });
+
+  it("drops malformed context windows and a hand-written context option they replace", () => {
+    const handWritten = {
+      optionDescriptors: [
+        ...capabilities.optionDescriptors!,
+        {
+          id: "contextWindow",
+          label: "Context Window",
+          type: "select" as const,
+          options: [{ id: "normal", label: "Normal" }],
+        },
+      ],
+    };
+    expect(
+      readCustomModelEntries([
+        { slug: "declared", capabilities: handWritten, contextWindows },
+        { slug: "malformed", capabilities: handWritten, contextWindows: [{ id: "x" }] },
+      ]).map((entry) => [
+        entry.contextWindows?.length ?? null,
+        entry.capabilities?.optionDescriptors?.map((descriptor) => descriptor.id),
+      ]),
+    ).toEqual([
+      [2, ["effort"]],
+      [null, ["effort", "contextWindow"]],
+    ]);
+  });
+});
+
+describe("customModelCapabilitiesWithContextWindows", () => {
+  const entry = (
+    contextWindows: CustomModelDefinition["contextWindows"],
+  ): CustomModelDefinition => ({
+    slug: "gateway-model",
+    name: "gateway-model",
+    capabilities: null,
+    contextWindows,
+  });
+
+  it("appends the declared windows as the context choice after the fallback options", () => {
+    const fallback = {
+      optionDescriptors: [{ id: "fastMode", label: "Fast Mode", type: "boolean" as const }],
+    };
+    expect(
+      customModelCapabilitiesWithContextWindows(
+        entry([
+          { id: "normal", label: "Normal", tokens: 272_000 },
+          { id: "long", label: "Long", tokens: 872_000, isDefault: true },
+        ]),
+        fallback,
+      ),
+    ).toEqual({
+      optionDescriptors: [
+        { id: "fastMode", label: "Fast Mode", type: "boolean" },
+        {
+          id: "contextWindow",
+          label: "Context Window",
+          type: "select",
+          options: [
+            { id: "normal", label: "Normal" },
+            { id: "long", label: "Long", isDefault: true },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("defaults to the first window when none is flagged", () => {
+    const descriptor = customModelCapabilitiesWithContextWindows(
+      entry([
+        { id: "a", label: "A", tokens: 1 },
+        { id: "b", label: "B", tokens: 2 },
+      ]),
+      null,
+    )?.optionDescriptors?.[0];
+    expect(descriptor?.type === "select" ? descriptor.options : null).toEqual([
+      { id: "a", label: "A", isDefault: true },
+      { id: "b", label: "B" },
+    ]);
+  });
+
+  it("leaves an entry without windows unchanged", () => {
+    expect(customModelCapabilitiesWithContextWindows(entry(null), null)).toBeNull();
   });
 });

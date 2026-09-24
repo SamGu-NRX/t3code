@@ -15,10 +15,32 @@ const draft = (overrides: Partial<CustomModelDraft>): CustomModelDraft => ({
   slug: "my-model",
   name: "",
   descriptors: [],
+  contextWindows: null,
   ...overrides,
 });
 
 describe("customModelEditor.logic", () => {
+  const contextWindows = [{ id: "long", label: "Long", tokens: 872_000, modelSuffix: "-long" }];
+
+  it("keeps declared context windows when the entry is edited and saved", () => {
+    const entry = { slug: "gateway-model", name: "Gateway", capabilities: null, contextWindows };
+    expect(definitionFromDraft(draftFromDefinition(entry)).contextWindows).toEqual(contextWindows);
+  });
+
+  it("refuses a hand-written context option on a model that declares windows", () => {
+    const contextOption = {
+      key: "c",
+      type: "select" as const,
+      id: "contextWindow",
+      label: "Context",
+      choices: [{ key: "c1", id: "long", label: "Long", isDefault: true }],
+    };
+    expect(validateDraft(draft({ contextWindows, descriptors: [contextOption] }))).toBe(
+      'Option 1: "contextWindow" comes from this model\'s contextWindows setting. Use another id.',
+    );
+    expect(validateDraft(draft({ descriptors: [contextOption] }))).toBeNull();
+  });
+
   it("round-trips a definition through the draft, marking the current value as default", () => {
     const definition = definitionFromDraft(
       draft({
@@ -57,6 +79,7 @@ describe("customModelEditor.logic", () => {
           { id: "fastMode", label: "Fast Mode", type: "boolean" },
         ],
       },
+      contextWindows: null,
     });
 
     const reopened = draftFromDefinition(definition);
@@ -169,7 +192,7 @@ describe("customModelEditor.logic", () => {
     ).toBe(false);
     const cursorCopy = descriptorsFromCapabilities(capabilities, ProviderDriverKind.make("cursor"));
     expect(cursorCopy.map((option) => option.id)).toEqual(["contextWindow", "thinking"]);
-    const authored = { slug: "custom", name: "Custom", capabilities };
+    const authored = { slug: "custom", name: "Custom", capabilities, contextWindows: null };
     expect(
       definitionFromDraft(draftFromDefinition(authored)).capabilities?.optionDescriptors?.[0],
     ).toMatchObject(capabilities.optionDescriptors![0]!);
@@ -222,8 +245,11 @@ describe("customModelEditor.logic", () => {
       slug: "my-model",
       name: "my-model",
       capabilities: null,
+      contextWindows: null,
     });
-    expect(draftFromDefinition({ slug: "x", name: "x", capabilities: null }).name).toBe("");
+    expect(
+      draftFromDefinition({ slug: "x", name: "x", capabilities: null, contextWindows: null }).name,
+    ).toBe("");
   });
 
   it("rejects duplicate ids, blank ids, and selects without choices", () => {

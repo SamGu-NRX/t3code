@@ -1,4 +1,5 @@
 import {
+  CONTEXT_WINDOW_OPTION_ID,
   type ModelCapabilities,
   ProviderDriverKind,
   type ProviderOptionDescriptor,
@@ -29,6 +30,8 @@ export interface CustomModelDraft {
   readonly slug: string;
   readonly name: string;
   readonly descriptors: ReadonlyArray<EditorDescriptor>;
+  /** Declared launch windows. The editor does not change them, only keeps them on save. */
+  readonly contextWindows: CustomModelDefinition["contextWindows"];
 }
 
 export interface DescriptorPreset {
@@ -175,10 +178,15 @@ export function draftFromDefinition(entry: CustomModelDefinition): CustomModelDr
     slug: entry.slug,
     name: entry.name === entry.slug ? "" : entry.name,
     descriptors: (entry.capabilities?.optionDescriptors ?? []).map(descriptorToEditor),
+    contextWindows: entry.contextWindows,
   };
 }
 
-/** Claude context choices require runtime suffix mappings that custom entries do not carry. */
+/**
+ * A built-in Claude context choice only works with the built-in's own launch
+ * mapping, so it is not copied. A custom model declares its windows in
+ * `contextWindows` instead.
+ */
 export function descriptorsFromCapabilities(
   capabilities: ModelCapabilities | null | undefined,
   driverKind: ProviderDriverKind | null,
@@ -198,6 +206,9 @@ export function validateDraft(draft: CustomModelDraft): string | null {
     const position = `Option ${index + 1}`;
     const id = descriptor.id.trim();
     if (!id) return `${position} needs an id.`;
+    if (draft.contextWindows !== null && id === CONTEXT_WINDOW_OPTION_ID) {
+      return `${position}: "${id}" comes from this model's contextWindows setting. Use another id.`;
+    }
     if (seenIds.has(id)) return `${position}: id "${id}" is used twice.`;
     seenIds.add(id);
     if (!descriptor.label.trim()) return `${position} needs a label.`;
@@ -254,5 +265,6 @@ export function definitionFromDraft(draft: CustomModelDraft): CustomModelDefinit
     name: name || draft.slug,
     capabilities:
       descriptors.length > 0 ? createModelCapabilities({ optionDescriptors: descriptors }) : null,
+    contextWindows: draft.contextWindows,
   };
 }

@@ -8236,4 +8236,161 @@ describe("ClaudeAdapterLive", () => {
       Effect.provide(harness.layer),
     );
   });
+
+  describe("custom model context windows", () => {
+    const CUSTOM_MODEL = "gateway-model";
+    const claudeConfig = {
+      customModels: [
+        {
+          slug: CUSTOM_MODEL,
+          contextWindows: [
+            { id: "normal", label: "Normal", tokens: 272_000, isDefault: true },
+            { id: "long", label: "Long", tokens: 872_000, modelSuffix: "-long" },
+          ],
+        },
+      ],
+    };
+    // The test process may itself run under a context wrapper that exports the variable.
+    const { CLAUDE_CODE_MAX_CONTEXT_TOKENS: _inherited, ...environment } = process.env;
+    const makeWindowHarness = () => makeHarness({ claudeConfig, environment });
+    const selectWindow = (window?: string) =>
+      createModelSelection(
+        ProviderInstanceId.make("claudeAgent"),
+        CUSTOM_MODEL,
+        window === undefined ? [] : [{ id: "contextWindow", value: window }],
+      );
+    const launch = (
+      harness: ReturnType<typeof makeHarness>,
+      modelSelection: ReturnType<typeof createModelSelection>,
+    ) =>
+      Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          modelSelection,
+          runtimeMode: "full-access",
+        });
+        return harness.getLastCreateQueryInput()!.options;
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+
+    it.effect("launches Claude Code with the chosen window and model suffix", () =>
+      Effect.gen(function* () {
+        const long = yield* launch(makeWindowHarness(), selectWindow("long"));
+        assert.equal(long.model, "gateway-model-long");
+        assert.equal(long.env?.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "872000");
+
+        const normal = yield* launch(makeWindowHarness(), selectWindow());
+        assert.equal(normal.model, CUSTOM_MODEL);
+        assert.equal(normal.env?.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "272000");
+
+        // Built-in models are sized by Claude Code itself; the variable stays unset.
+        const builtIn = yield* launch(
+          makeWindowHarness(),
+          createModelSelection(
+            ProviderInstanceId.make("claudeAgent"),
+            SYNTHETIC_CLAUDE_CAPABLE_MODEL,
+            [{ id: "contextWindow", value: "expanded" }],
+          ),
+        );
+        assert.equal(builtIn.env?.CLAUDE_CODE_MAX_CONTEXT_TOKENS, undefined);
+      }),
+    );
+
+    it.effect("keeps the launched window as capacity when a subagent reports a larger one", () => {
+      const harness = makeWindowHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          modelSelection: selectWindow("long"),
+          runtimeMode: "full-access",
+        });
+        const turnFiber = yield* adapter.streamEvents.pipe(
+          Stream.takeUntil((event) => event.type === "turn.completed"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "hello",
+          modelSelection: selectWindow("long"),
+          attachments: [],
+        });
+        harness.query.emit({
+          type: "assistant",
+          session_id: "sdk-session-custom-window",
+          uuid: "assistant-custom-window",
+          parent_tool_use_id: null,
+          message: {
+            id: "assistant-message-custom-window",
+            role: "assistant",
+            content: [],
+            usage: { input_tokens: 180, output_tokens: 20 },
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          duration_ms: 10,
+          duration_api_ms: 10,
+          num_turns: 1,
+          result: "done",
+          stop_reason: "end_turn",
+          session_id: "sdk-session-custom-window",
+          usage: { input_tokens: 180, output_tokens: 20 },
+          modelUsage: {
+            [CUSTOM_MODEL]: { contextWindow: 872_000, maxOutputTokens: 64_000 },
+            [SYNTHETIC_CLAUDE_CAPABLE_MODEL]: { contextWindow: 1_000_000, maxOutputTokens: 64_000 },
+          },
+        } as unknown as SDKMessage);
+
+        const usageEvents = Array.from(yield* Fiber.join(turnFiber)).filter(
+          (event) => event.type === "thread.token-usage.updated",
+        );
+        assert.isAbove(usageEvents.length, 0);
+        for (const event of usageEvents) {
+          if (event.type === "thread.token-usage.updated") {
+            assert.equal(event.payload.usage.maxTokens, 872_000);
+          }
+        }
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+
+    it.effect("refuses a turn that asks a running session for a different window", () => {
+      const harness = makeWindowHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          modelSelection: selectWindow("normal"),
+          runtimeMode: "full-access",
+        });
+        const error = yield* adapter
+          .sendTurn({
+            threadId: THREAD_ID,
+            input: "switch windows",
+            modelSelection: selectWindow("long"),
+            attachments: [],
+          })
+          .pipe(Effect.flip);
+        assert.equal(error._tag, "ProviderAdapterRequestError");
+        assert.include(error.message, "272,000-token");
+        assert.include(error.message, "872,000-token");
+        assert.equal(harness.query.setModelCalls.length, 0);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+  });
 });
